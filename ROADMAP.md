@@ -1,0 +1,265 @@
+# TrackShell Mapping Platform — Execution Roadmap
+
+Phased delivery plan for the internal dashboard. Update the checkboxes
+(`[ ]` → `[x]`) as tasks land. AI agents: read this file at the start of
+every session, find the next unchecked task in the earliest incomplete
+week, and pick up from there.
+
+---
+
+## MVP Definition
+
+**MVP is achieved when a single operator can:**
+1. Register a course with a GPS bounding box
+2. Trigger a pipeline job and watch it run live
+3. Open the review UI, make corrections to flagged holes, and confirm all holes
+4. Sign off on the course and publish it to the consumer API
+
+End-to-end path lands at **end of Week 6**.
+
+---
+
+## Status Legend
+
+- `[ ]` — not started
+- `[~]` — in progress
+- `[x]` — done
+- `[!]` — blocked (note the blocker)
+
+---
+
+## Week 1 — Foundation ✅ COMPLETE
+
+*Goal: App boots, auth works, DB connected, shell renders*
+
+- [x] Scaffold Next.js 14 (App Router, TypeScript, Tailwind)
+- [x] Write Prisma schema + initial migration SQL (all 9 steps per PRD 2c §6)
+- [x] Configure PostGIS local dev via Docker Compose
+- [x] Set up NextAuth.js credential provider (email + password, bcrypt, JWT)
+- [x] Login page (`/login`)
+- [x] Dashboard layout shell — sidebar nav, route-level session guard
+- [x] Populate `.env.example`
+- [x] Prisma seed script (org + admin + reviewer + 5 courses across statuses + 18 holes for Seoul CC)
+- [x] `/api/health` endpoint
+- [x] Clean `npm run build`
+
+**Milestone M1 — Boot:** ✅ App starts, login works, DB migrated, seed data loads.
+
+---
+
+## Week 2 — Course CRUD + Library
+
+*Goal: Operators can add and manage courses*
+
+### API routes
+- [ ] `GET /api/courses` — paginated list, search (name/city/region), country + status filters, default sort by `updated_at DESC`
+- [ ] `POST /api/courses` — create with `org_id` scoping; bounding_box written via raw SQL in `lib/spatial.ts`
+- [ ] `GET /api/courses/[id]` — detail + pipeline summary stats (polygon count, flagged count, avg confidence, last mIoU)
+- [ ] `PATCH /api/courses/[id]` — metadata edit
+- [ ] `DELETE /api/courses/[id]` — soft delete (sets `deleted_at`), admin only
+- [ ] `GET /api/courses/[id]/features` — GeoJSON FeatureCollection for map preview
+
+### Pages
+- [ ] `/dashboard/courses` — course library: status badges, colour codes per PRD 2a §4.3, 20/page pagination, filters, search
+- [ ] `/dashboard/courses/new` — add course form with MapLibre satellite bounding box picker (draw rectangle)
+- [ ] `/dashboard/courses/[id]/overview` — metadata, action buttons conditional on status + role, MapLibre polygon preview with routing lines
+
+### Components
+- [ ] `components/map/CourseMap.tsx` — MapLibre GL base map (Mapbox satellite tiles via `NEXT_PUBLIC_MAPBOX_TOKEN`)
+- [ ] `components/map/PolygonLayer.tsx` — GeoJSON polygon overlay with per-type colours
+- [ ] `components/map/RoutingLines.tsx` — tee-centroid → green-centroid LineString layer, togglable
+- [ ] `components/map/BoundingBoxPicker.tsx` — rectangle draw for new-course form
+- [ ] `components/ui/StatusBadge.tsx` — status-coloured pill for course library
+- [ ] `components/ui/CourseActionButtons.tsx` — Run / Review / Publish / Edit / Delete with role + status gating
+
+### Tests
+- [ ] API tests: org isolation on list + detail, admin-only on DELETE, soft-delete hides from list
+- [ ] Component test: StatusBadge renders correct colour per status
+
+**Milestone M2 — Courses:** full CRUD + map preview visible in UI.
+
+---
+
+## Week 3 — Pipeline Jobs + SSE Live Progress
+
+*Goal: Operators can trigger jobs and watch them run*
+
+### API routes
+- [ ] `POST /api/jobs/run` — validates course state, creates `pipeline_jobs` row, calls `PIPELINE_API_URL` with shared key
+- [ ] `GET /api/jobs/[id]/stream` — SSE stream; **must close** on `completed` | `failed` | `cancelled` per RULES.md
+- [ ] `GET /api/jobs/[id]/status` — polling fallback
+- [ ] `DELETE /api/jobs/[id]` — cancel running job
+
+### UI
+- [ ] Job config modal (job type radio, force re-run, tile source) per PRD 2a §7.1
+- [ ] Live progress panel on `/courses/[id]/overview` — stage list, progress bar, chip/polygon counts
+- [ ] Success banner + "Review Holes" CTA when complete; failure banner with truncated error + retry
+- [ ] Routing lines layer togglable on course overview map
+- [ ] Resend email integration — fires on `status = failed`, course name + error summary + job log link; no success emails (Decision 12)
+
+### Tests
+- [ ] SSE stream closes after terminal state (no dangling connections)
+- [ ] Only admin can force re-run when course status is `reviewed` or `published`
+
+**Milestone M3 — Jobs:** pipeline triggering, live SSE progress, failure emails.
+
+---
+
+## Week 4 — Global Queue + Settings + CI/CD
+
+*Goal: PRD 2a complete; platform deployable*
+
+### API routes
+- [ ] `GET /api/jobs` — all jobs, filters (status, job type, date range)
+- [ ] `POST /api/courses/[id]/publish` — admin only; sets `status = published`
+- [ ] `POST /api/courses/[id]/unpublish` — admin only; sets `status = reviewed`
+- [ ] User management: `GET/POST /api/users`, `PATCH /api/users/[id]` (role change / deactivate) — admin only
+
+### Pages
+- [ ] `/dashboard/jobs` — global queue with filters, running/queued/failed counts
+- [ ] `/dashboard/courses/[id]/jobs` — per-course job history; click row → job log modal
+- [ ] `/dashboard/settings` — create reviewer, promote/demote, deactivate (admin only)
+
+### CI/CD
+- [x] GitHub Actions `test.yml` — lint + `next build` + Jest on every PR *(landed early, Week 1)*
+- [ ] GitHub Actions `deploy.yml` — `prisma migrate deploy` → Vercel trigger → smoke test `/api/health`
+- [ ] Vercel project connected, staging preview from `dev` branch
+- [ ] Sentry DSN added to Vercel env vars
+
+**Milestone M4 — Dashboard Complete:** ✅ PRD 2a delivered, staging deployed.
+
+---
+
+## Week 5 — Review UI: Structure + Navigation
+
+*Goal: Reviewer can open a course, navigate holes, inspect polygons (read-only)*
+
+### API routes
+- [ ] `GET /api/courses/[id]/review` — full review state: holes + flags + polygon lists + topology check results + progress
+- [ ] `GET /api/courses/[id]/features/geojson` — full FeatureCollection for map canvas
+- [ ] `GET /api/courses/[id]/holes/[holeId]` — single hole detail
+- [ ] Lock endpoints: `POST /api/courses/[id]/lock` (acquire — 409 if held, auto-release > 2h), `DELETE /api/courses/[id]/lock` (release)
+
+### UI — three-panel layout
+- [ ] `/courses/[id]/review` page — 240px hole list + flex map canvas + 320px inspector
+- [ ] `components/review/HoleList.tsx` — flagged holes sorted by `assignment_confidence ASC` at top; confirmed holes below in hole-number order; progress counter
+- [ ] `components/review/MapCanvas.tsx` — MapLibre GL, satellite base, polygon layers with PRD 2b §5.2 colour opacities; active hole full-opacity with blue outline, others dimmed
+- [ ] `components/review/Inspector.tsx` — hole view (polygon list + topology check) and polygon view (metadata) — **read-only in Week 5**
+- [ ] Lock acquired on page mount; released on unmount / navigation away; 409 banner if held by another reviewer
+
+### Keyboard shortcuts (Week 5 subset)
+- [ ] ↑ / ↓ hole nav, F fit-to-hole, C fit-to-course, Escape deselect
+
+**Milestone M5 — Review Readable:** ✅ three-panel UI navigable, all polygons visible.
+
+---
+
+## Week 6 — Review UI: Corrections + Sign-Off = MVP
+
+*Goal: All corrections wired, course can be signed off and published*
+
+### Correction API routes
+All mutations must write a `corrections` row **first**, in the same transaction (RULES.md).
+
+- [ ] `PATCH /api/features/[featureId]/hole` — reassign; `correction_type = hole_reassignment`
+- [ ] `PATCH /api/features/[featureId]/type` — change type; `correction_type = type_change`
+- [ ] `PATCH /api/features/[featureId]/geometry` — edit; validate `ST_IsValid` + `ST_Area ≥ 20 m²` → 422 on fail; `correction_type = geometry_edit`
+- [ ] `DELETE /api/features/[featureId]` — hard delete; snapshot geometry + type + confidence into correction row first (§7.4)
+- [ ] `POST /api/courses/[id]/holes/[holeId]/confirm` — set `needs_review = false`, `confirmed = true`, `features.reviewed = true` for that hole
+- [ ] `POST /api/courses/[id]/review/complete` — server validates no `needs_review = true AND confirmed = false` → 400; set `status = reviewed`
+- [ ] `GET /api/corrections?courseId=...` — correction history
+
+### UI
+- [ ] Inspector dropdowns wired — reassign hole, change type, apply/cancel
+- [ ] Mapbox GL Draw integration for vertex-drag geometry editing
+- [ ] Delete polygon confirmation dialog
+- [ ] Ctrl+Z single-level undo per correction
+- [ ] Offline/failure warning — block submission without server 2xx (no optimistic writes, RULES.md)
+- [ ] Keyboard shortcuts: D toggle draw, Delete/Backspace delete polygon, Enter confirm hole, Ctrl+Z undo
+- [ ] Sign-off screen (`/courses/[id]/review` → complete view) — correction summary, reviewer notes, "Mark Course Reviewed" button
+- [ ] Auto-advance to next flagged hole on confirm
+
+### Tests
+- [ ] Transaction integrity: correction row + feature mutation atomic (force one to fail, both roll back)
+- [ ] 409 returned when course locked by another user
+- [ ] 422 on invalid geometry + sub-20m² polygon
+- [ ] 400 on sign-off with any `needs_review = true AND confirmed = false`
+- [ ] Hard delete removes feature; correction row survives with geometry snapshot
+
+**Milestone M6 — MVP:** ✅ Full end-to-end operator workflow is functional.
+
+---
+
+## Week 7 — Polish, Tests, Production
+
+*Goal: Production-ready, monitored, covered by tests*
+
+- [ ] API route tests for all correction endpoints (org isolation, lock, geometry validation, sign-off gate)
+- [ ] Component tests for HoleList, Inspector, CorrectionActions
+- [ ] Sentry capturing errors on Vercel production
+- [ ] `deploy.yml` smoke tests: `GET /api/health → 200`, `GET /dashboard/courses → 302` (unauth)
+- [ ] Performance validation vs NFRs: map render < 2s, correction save < 500ms, draw mode < 50ms
+- [ ] Full end-to-end walkthrough (add → trigger → review → sign-off → publish) on staging
+- [ ] Production deployment from `main`
+
+**Milestone M7 — Production:** ✅ tests passing, Sentry live, production deployed.
+
+---
+
+## Milestones at a glance
+
+| Milestone | Week | Done |
+|---|---|---|
+| M1 — Boot | 1 | ✅ |
+| M2 — Courses | 2 |   |
+| M3 — Jobs | 3 |   |
+| M4 — Dashboard Complete | 4 |   |
+| M5 — Review Readable | 5 |   |
+| **M6 — MVP** | 6 |   |
+| M7 — Production | 7 |   |
+
+---
+
+## Success Metrics (gate before MVP ship)
+
+### Functional
+| Check | Target |
+|---|---|
+| Course library page load | < 1.5s (server-rendered) |
+| Map polygon overlay render | < 2s on initial load |
+| Job SSE update lag | < 2s after pipeline stage completes |
+| Correction save round-trip | < 500ms |
+| Draw mode vertex drag | < 50ms perceived latency |
+| Max polygons rendered | 500 without MapLibre perf degradation |
+
+### Correctness (no-ship blockers)
+- No correction written without a prior `corrections` table row in the same transaction
+- Sign-off blocked server-side when any hole has `needs_review = true AND confirmed = false`
+- Reviewer lock enforced: 409 if locked by another user
+- Geometry submissions rejected if `ST_IsValid = false` or `ST_Area < 20 m²`
+- `DATABASE_URL` and `PIPELINE_API_KEY` never appear in any `NEXT_PUBLIC_*` variable
+- All `/dashboard/*` routes redirect to `/login` without a valid session
+- All admin-only actions return 403 to reviewer role
+
+### Operational (Week 7 gate)
+- All API route tests passing in CI
+- Sentry capturing errors on production
+- `/api/health` smoke test in deploy pipeline
+- Staging deployment proven before production merge
+
+---
+
+## Build order logic
+
+Critical path: **schema → auth → course CRUD → map preview → job triggering → review UI structure → corrections**. Each phase depends on the previous. The database schema (Week 1) is the foundation — getting migrations right before writing application code prevents the most expensive class of rework.
+
+---
+
+## Notes for AI agents picking this up
+
+- Always read `CLAUDE.md` and `RULES.md` first — they contain security constraints and architectural rules that override defaults.
+- Check memory at `~/.claude/projects/-Users-nos-TrackShellMappingPlatform/memory/` for accumulated context.
+- Before starting a week, verify all prior weeks' tasks are `[x]`. If any are `[ ]` or `[~]`, finish those first — later weeks depend on them.
+- When you complete a task, flip its checkbox and commit. Don't batch checkbox updates.
+- When blocked, mark the task `[!]` and leave a one-line note next to it explaining the blocker.
+- Don't invent features not in this roadmap or the PRDs. If a gap is discovered, raise it rather than silently expanding scope.

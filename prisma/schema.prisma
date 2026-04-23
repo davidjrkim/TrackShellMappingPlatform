@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum CourseStatus {
+  unmapped
+  processing
+  segmented
+  assigned
+  reviewed
+  published
+  failed
+
+  @@map("course_status")
+}
+
+enum DataSourceType {
+  ml_pipeline
+  manual
+  imported
+
+  @@map("data_source_type")
+}
+
+enum FeatureType {
+  green
+  fairway
+  tee_box
+  bunker
+  water_hazard
+
+  @@map("feature_type_enum")
+}
+
+enum JobStatus {
+  queued
+  running
+  completed
+  failed
+  cancelled
+
+  @@map("job_status_enum")
+}
+
+enum UserRole {
+  admin
+  reviewer
+
+  @@map("user_role_enum")
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  users   User[]
+  courses Course[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  name         String    @db.VarChar(255)
+  role         UserRole  @default(reviewer)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz()
+
+  org           Organization  @relation(fields: [orgId], references: [id])
+  triggeredJobs PipelineJob[] @relation("TriggeredBy")
+  corrections   Correction[]
+  lockedCourses Course[]      @relation("LockedBy")
+
+  @@map("users")
+}
+
+model Course {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            String         @map("org_id") @db.Uuid
+  name             String         @db.VarChar(255)
+  nameLocal        String?        @map("name_local") @db.VarChar(255)
+  country          String         @db.Char(2)
+  region           String?        @db.VarChar(100)
+  city             String?        @db.VarChar(100)
+  latitude         Decimal        @db.Decimal(10, 7)
+  longitude        Decimal        @db.Decimal(10, 7)
+  // bounding_box is a PostGIS GEOMETRY(Polygon,4326) — written via raw SQL in lib/spatial.ts
+  holeCount        Int            @default(18) @map("hole_count") @db.SmallInt
+  status           CourseStatus   @default(unmapped)
+  dataSource       DataSourceType @map("data_source")
+  sourceExternalId String?        @map("source_external_id") @db.VarChar(255)
+  lastSyncedAt     DateTime?      @map("last_synced_at") @db.Timestamptz()
+  mlModelVersion   String?        @map("ml_model_version") @db.VarChar(50)
+  lockedBy         String?        @map("locked_by") @db.Uuid
+  lockedAt         DateTime?      @map("locked_at") @db.Timestamptz()
+  deletedAt        DateTime?      @map("deleted_at") @db.Timestamptz()
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  org          Organization  @relation(fields: [orgId], references: [id])
+  lockedByUser User?         @relation("LockedBy", fields: [lockedBy], references: [id])
+  holes        Hole[]
+  features     Feature[]
+  jobs         PipelineJob[]
+
+  @@map("courses")
+}
+
+model Hole {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId             String   @map("course_id") @db.Uuid
+  holeNumber           Int      @map("hole_number") @db.SmallInt
+  par                  Int?     @db.SmallInt
+  strokeIndex          Int?     @map("stroke_index") @db.SmallInt
+  teeLat               Decimal? @map("tee_lat") @db.Decimal(10, 7)
+  teeLng               Decimal? @map("tee_lng") @db.Decimal(10, 7)
+  greenLat             Decimal? @map("green_lat") @db.Decimal(10, 7)
+  greenLng             Decimal? @map("green_lng") @db.Decimal(10, 7)
+  assignmentConfidence Decimal? @map("assignment_confidence") @db.Decimal(4, 3)
+  needsReview          Boolean  @default(false) @map("needs_review")
+  confirmed            Boolean  @default(false)
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  features Feature[]
+
+  @@unique([courseId, holeNumber], name: "uq_course_hole")
+  @@map("holes")
+}
+
+model Feature {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  holeId          String?     @map("hole_id") @db.Uuid
+  courseId        String      @map("course_id") @db.Uuid
+  featureType     FeatureType @map("feature_type")
+  // geometry is GEOMETRY(MultiPolygon,4326) — always MULTIPOLYGON per CLAUDE.md
+  // Read/written via raw SQL in lib/spatial.ts — not accessible via Prisma Client
+  areaSqm         Decimal?    @map("area_sqm") @db.Decimal(10, 2)
+  confidenceScore Decimal?    @map("confidence_score") @db.Decimal(4, 3)
+  pixelClassId    Int?        @map("pixel_class_id") @db.SmallInt
+  reviewed        Boolean     @default(false)
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  hole        Hole?        @relation(fields: [holeId], references: [id], onDelete: Cascade)
+  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  corrections Correction[]
+
+  @@map("features")
+}
+
+model PipelineJob {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId          String    @map("course_id") @db.Uuid
+  jobType           String    @map("job_type") @db.VarChar(50)
+  status            JobStatus @default(queued)
+  triggeredBy       String?   @map("triggered_by") @db.Uuid
+  modelVersion      String?   @map("model_version") @db.VarChar(50)
+  llmModel          String?   @map("llm_model") @db.VarChar(100)
+  inputTilesCount   Int?      @map("input_tiles_count")
+  polygonsGenerated Int?      @map("polygons_generated")
+  errorMessage      String?   @map("error_message")
+  startedAt         DateTime? @map("started_at") @db.Timestamptz()
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz()
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  course          Course @relation(fields: [courseId], references: [id])
+  triggeredByUser User?  @relation("TriggeredBy", fields: [triggeredBy], references: [id])
+
+  @@map("pipeline_jobs")
+}
+
+model Correction {
+  id                   String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  featureId            String?      @map("feature_id") @db.Uuid
+  courseId             String       @map("course_id") @db.Uuid
+  correctionType       String       @map("correction_type") @db.VarChar(50)
+  originalHoleNumber   Int?         @map("original_hole_number") @db.SmallInt
+  correctedHoleNumber  Int?         @map("corrected_hole_number") @db.SmallInt
+  originalFeatureType  FeatureType? @map("original_feature_type")
+  correctedFeatureType FeatureType? @map("corrected_feature_type")
+  // original_geometry is GEOMETRY(MultiPolygon,4326) — snapshot before edit/deletion
+  // Written via raw SQL in lib/spatial.ts — not accessible via Prisma Client
+  correctedBy          String       @map("corrected_by") @db.Uuid
+  notes                String?
+  createdAt            DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+
+  feature         Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  correctedByUser User     @relation(fields: [correctedBy], references: [id])
+
+  @@map("corrections")
+}
