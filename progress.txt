@@ -14,6 +14,8 @@
 - Course-scoped transactions (e.g. sign-off in US-006) should release the lock inside the same $transaction that flips status — do NOT call releaseLock() separately after the transaction, or a partial failure can leak the lock. UPDATE courses SET status=..., locked_by=NULL, locked_at=NULL in one statement.
 - Sign-off gate query is `SELECT hole_number FROM holes WHERE course_id=$1 AND needs_review=true AND confirmed=false` — return the list as `blocking_holes: number[]` in the 400 body so the UI can render which holes still block sign-off.
 - Prisma + PostGIS interaction: `prisma migrate dev` refuses to run non-interactively and complains about the `bounding_box` PostGIS column it cannot see. Workaround when adding a plain column: create the migration folder under prisma/migrations/<timestamp>_<name>/migration.sql by hand with the ALTER/CREATE TYPE, then `npx prisma migrate deploy` to apply it and record it in _prisma_migrations. Update prisma/schema.prisma alongside so the generated client picks up the new column.
+- Read endpoints that scope by course_id must still org-isolate: do a preflight `SELECT id FROM courses WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL` (404 if empty), then issue the data query. corrections has no org_id column — the course join / preflight is the only barrier.
+- For corrections audit reads, expose geometry snapshots as `{ has_geometry_snapshot: boolean, snapshot_area_sqm: float|null }` via `ST_Area(original_geometry::geography)`. Do NOT ship full MultiPolygon blobs in list payloads — they are large, and the UI only needs presence + size for the audit feed.
 ---
 
 ## 2026-04-24 - US-003
@@ -75,6 +77,25 @@
   - corrections.correction_type is a VARCHAR(50) (not an enum), so new event types like 'course_signoff' require no migration — just pick a stable string.
   - Auto-confirm path leaves confirmation_type='auto' on holes that never had needs_review flag set AND were never manually confirmed. The WHERE `confirmed=false` after the gate is safe because the gate guaranteed zero `needs_review=true AND confirmed=false` rows remain.
   - Body parsing pattern: `await req.json()` in a try/catch with null fallback — Next.js throws on empty body, so tolerate it for optional-body POSTs.
+---
+
+## 2026-04-24 - US-007
+- Implemented GET /api/corrections — correction history for a course, with org isolation and user email/name + geometry snapshot metadata per row.
+- Files changed:
+  - app/api/corrections/route.ts (new)
+  - prd.json (US-007 passes=true + notes)
+  - progress.txt (this entry + two Codebase Patterns)
+- Flow:
+  1. Session required (401 otherwise).
+  2. Require `courseId` query param (400 if missing); 404 if not a UUID or course not visible to the caller's org.
+  3. Preflight `SELECT id FROM courses WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL` — corrections has no org_id column, so the course gate is the isolation barrier.
+  4. Single JOIN query against corrections + users returning correction_type, hole/feature-type before/after, `has_geometry_snapshot`, `snapshot_area_sqm` (ST_Area on geography cast), notes, created_at, and nested `corrected_by: { id, email, name }`.
+  5. Ordered by created_at DESC.
+- **Learnings for future iterations:**
+  - corrections has no `org_id` column — any read endpoint MUST join through `courses` (or preflight the course) on `org_id` to enforce isolation. Skipping this lets a user in org A read org B's audit trail.
+  - Shipping original_geometry on list endpoints is wasteful — expose presence + ST_Area(::geography) instead. Full MultiPolygon should only go out on a single-correction detail endpoint when/if one is added.
+  - `u.id AS corrected_by_id` + JS-side remap to `corrected_by: { id, email, name }` is cleaner than trying to nest via SQL `row_to_json` — the response shape is easier to type and unit-test.
+  - `ST_Area(geom::geography)::float` returns m² regardless of SRID — reuse the pattern elsewhere when exposing measured areas to the UI.
 ---
 
 ## 2026-04-24 - US-005

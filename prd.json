@@ -112,8 +112,8 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented app/api/corrections/route.ts GET. Requires session (401). Returns 400 if courseId missing; 404 if courseId is not a UUID or the course is not visible to the caller's org (org_id + deleted_at IS NULL). Joins users for corrected_by email/name. Geometry snapshot metadata exposed as { has_geometry_snapshot: boolean, snapshot_area_sqm: float|null } computed via ST_Area(original_geometry::geography) — avoids shipping full MultiPolygon payloads on every audit read. Rows ordered by created_at DESC and returned under { corrections: [...] }."
     },
     {
       "id": "US-008",
