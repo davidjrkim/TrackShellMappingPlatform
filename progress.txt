@@ -32,6 +32,8 @@
 - Render overlay modals at the ReviewWorkspace level, not inside a side panel — the right-panel Inspector has its own stacking context, which breaks a `fixed inset-0` overlay's positioning. The workspace root is the correct anchor for any full-screen dialog.
 - Single-level undo pattern: ReviewWorkspace owns a `LastCorrection` discriminated union that records the INVERSE payload after each successful correction. Success callbacks from child controls carry the prior value (Inspector's ReassignHoleControl/ChangeTypeControl now pass {featureId, priorHoleId|priorType}); geometry prior is captured from the existing `selectedFeatureGeometry` memo before the refresh lands. Undo dispatches a fetch DIRECTLY from the workspace rather than re-entering the Inspector flow — re-entering would re-fire the success callback and register an undo-of-undo, defeating single-level. On success clear the slot + refresh; on failure surface inline error and leave the slot so the user can retry.
 - For non-reversible corrections (polygon_delete — no feature-insert endpoint yet), record a `{undoable: false, reason}` slot instead of leaving the slot null. That lets the Undo button render disabled WITH a tooltip explaining why, which satisfies the AC's "otherwise undo is disabled with tooltip" clause. A null slot would just hide the control silently.
+- Global Enter keyboard shortcut and focused buttons double-fire: when Enter is pressed with a BUTTON or A focused, the browser already dispatches a synthetic click on that element. A window-level `keydown` that also fires on Enter will double-action. Guard the Enter branch with `if (e.target.tagName === 'BUTTON' || tag === 'A') break` so the native click is the only thing that happens when something clickable is focused. `isTypingTarget` handles INPUT/TEXTAREA/SELECT/contentEditable but deliberately does NOT exclude BUTTON — other shortcuts (↑↓, F, C) should still work when a button has focus.
+- Per-hole confirm from the client: POST `/api/courses/{id}/holes/{holeId}/confirm` writes the corrections row + flips holes.confirmed server-side. The client must mirror the flip in its local `holes` state so HoleList re-sorts and re-colours without a page reload — change `const [holes] = useState(initialHoles)` to include a setter, then `setHoles(prev => prev.map(h => h.id === id ? {...h, confirmed:true, needs_review:false} : h))` on 2xx. Also bump `holeFeaturesVersion` + call `refreshGeoJSON()` so features.reviewed=true lands in Inspector/overlay.
 ---
 
 ## 2026-04-24 - US-003
@@ -248,3 +250,20 @@
   - US-006 will follow the same shape but must first enforce sign-off gate (400 if any needs_review=true AND confirmed=false) and then auto-confirm the rest via confirmation_type='auto' before flipping courses.status = 'reviewed' and releasing the lock.
 ---
 
+
+## 2026-04-24 - US-013
+- Wired the Enter keyboard shortcut to confirm the currently selected hole (POST /api/courses/[id]/holes/[holeId]/confirm). Other shortcuts in the AC (D, Delete/Backspace, Ctrl+Z, isTypingTarget gate) were already present from US-009/010/011 — this story only adds Enter + verifies the others still fire.
+- Files changed:
+  - components/review/ReviewWorkspace.tsx (Enter branch in keydown, confirmActiveHole callback, confirmError banner, holes state setter)
+  - prd.json (US-013 passes=true + notes)
+  - progress.txt (this entry + two new Codebase Patterns entries)
+- Flow:
+  1. Enter pressed while `!drawModeActive && !deleteDialogFeature && !isTypingTarget(e.target) && e.target not BUTTON/A && selectedHoleId && !hole.confirmed` → preventDefault + confirmActiveHole().
+  2. confirmActiveHole() POSTs, non-2xx surfaces red banner at top-center with Retry button.
+  3. On 2xx, setHoles mirrors `confirmed=true, needs_review=false`, bumps holeFeaturesVersion (refetch so features.reviewed=true renders), and calls refreshGeoJSON() (map overlay refresh).
+- **Learnings for future iterations:**
+  - Added two reusable patterns to the Codebase Patterns block at the top of this file: (a) Enter+focused-button double-fire guard, (b) client-side hole-confirm flow.
+  - The Inspector "Confirm Hole (Week 6)" button is still rendered disabled — out of scope for US-013 but a natural follow-up alongside US-014 (sign-off screen). Not touched here to keep the diff focused on the keyboard-shortcut AC.
+  - The pre-existing `tests/api/jobs.test.ts` failure (Cannot find module '@/lib/pipeline') predates this branch — it has been failing since Weeks 2-4 and is unrelated to correction-flow work. All other 30 tests pass.
+  - Manual browser verification of the Enter shortcut is still required — no dev-browser tool in this environment.
+---

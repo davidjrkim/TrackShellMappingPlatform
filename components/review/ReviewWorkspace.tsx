@@ -91,7 +91,7 @@ export default function ReviewWorkspace({
   topologyByHoleId,
   initialLock,
 }: Props) {
-  const [holes] = useState<HoleSummary[]>(initialHoles)
+  const [holes, setHoles] = useState<HoleSummary[]>(initialHoles)
   const [selectedHoleId, setSelectedHoleId] = useState<string | null>(() => {
     const flagged = initialHoles.find((h) => h.needs_review && !h.confirmed)
     if (flagged) return flagged.id
@@ -111,6 +111,9 @@ export default function ReviewWorkspace({
   const [lastCorrection, setLastCorrection] = useState<LastCorrection | null>(null)
   const [undoInFlight, setUndoInFlight] = useState(false)
   const [undoError, setUndoError] = useState<string | null>(null)
+
+  const [confirmInFlight, setConfirmInFlight] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
 
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
@@ -370,6 +373,43 @@ export default function ReviewWorkspace({
     }
   }, [lastCorrection, refreshGeoJSON, undoInFlight])
 
+  const confirmActiveHole = useCallback(async () => {
+    if (!selectedHoleId) return
+    const hole = holes.find((h) => h.id === selectedHoleId)
+    if (!hole || hole.confirmed) return
+    if (confirmInFlight) return
+    setConfirmInFlight(true)
+    setConfirmError(null)
+    try {
+      const res = await fetch(
+        `/api/courses/${courseId}/holes/${selectedHoleId}/confirm`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Confirm failed (${res.status})`
+        setConfirmError(message)
+        return
+      }
+      setHoles((prev) =>
+        prev.map((h) =>
+          h.id === selectedHoleId
+            ? { ...h, confirmed: true, needs_review: false }
+            : h,
+        ),
+      )
+      setHoleFeaturesVersion((v) => v + 1)
+      refreshGeoJSON()
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : 'Confirm failed')
+    } finally {
+      setConfirmInFlight(false)
+    }
+  }, [confirmInFlight, courseId, holes, refreshGeoJSON, selectedHoleId])
+
   // Exit draw mode if the selected feature clears. Otherwise DrawMode would
   // keep editing a feature that is no longer in focus.
   useEffect(() => {
@@ -501,11 +541,29 @@ export default function ReviewWorkspace({
           setDeleteDialogFeature(hit)
           break
         }
+        case 'Enter': {
+          if (drawModeActive) break
+          if (deleteDialogFeature) break
+          // Browsers fire a synthetic click on the focused button when Enter
+          // is pressed. If we also fire confirmActiveHole, the user gets two
+          // actions for one keystroke. Skip when a button/link is focused and
+          // let the native handler run.
+          if (e.target instanceof HTMLElement) {
+            const tag = e.target.tagName
+            if (tag === 'BUTTON' || tag === 'A') break
+          }
+          if (!selectedHoleId) break
+          const hole = holes.find((h) => h.id === selectedHoleId)
+          if (!hole || hole.confirmed) break
+          e.preventDefault()
+          void confirmActiveHole()
+          break
+        }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, lastCorrection, applyUndo])
+  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, lastCorrection, applyUndo, confirmActiveHole])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -611,6 +669,25 @@ export default function ReviewWorkspace({
             )
           })()}
         </div>
+
+        {confirmError && (
+          <div
+            role="alert"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
+            data-testid="confirm-hole-error"
+          >
+            <span>{confirmError}</span>
+            <button
+              type="button"
+              onClick={() => void confirmActiveHole()}
+              disabled={confirmInFlight}
+              className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="confirm-hole-retry"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {undoError && (
           <div

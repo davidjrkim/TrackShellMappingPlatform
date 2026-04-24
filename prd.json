@@ -208,8 +208,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented Enter = confirm current hole in components/review/ReviewWorkspace.tsx. Added confirmActiveHole() callback that POSTs /api/courses/{id}/holes/{holeId}/confirm, surfaces non-2xx inline via a top-center role=alert banner with Retry button (mirrors the undoError banner pattern), and on 2xx updates local holes state (confirmed=true, needs_review=false), bumps holeFeaturesVersion (refetch features so reviewed=true lands), and calls refreshGeoJSON(). Changed `const [holes] = useState(initialHoles)` to include a setter. Keydown handler gained an Enter branch with guards: drawModeActive, deleteDialogFeature, focus on BUTTON/A (lets the native button click fire instead of double-action), no selectedHoleId, or hole already confirmed. `isTypingTarget` already excludes INPUT/TEXTAREA/SELECT/contentEditable — covers the 'shortcuts are no-ops while typing' AC. D/Delete/Backspace/Ctrl+Z were confirmed already present from US-009/010/011. confirmActiveHole added to the keydown effect's dep array alongside the state it reads. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-014",
