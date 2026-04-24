@@ -328,8 +328,8 @@
         "Typecheck passes"
       ],
       "priority": 21,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Installed @sentry/nextjs@^10.50.0. Added sentry.client.config.ts + sentry.server.config.ts + sentry.edge.config.ts — each reads SENTRY_DSN (client also falls back to NEXT_PUBLIC_SENTRY_DSN) and short-circuits Sentry.init() when the DSN is absent, so local dev without Sentry doesn't crash or emit noise. Added instrumentation.ts (Next.js 14 hook) that conditionally imports the server or edge config based on NEXT_RUNTIME. next.config.mjs wrapped with withSentryConfig({ silent: true }) — withSentryConfig is safe to call without a DSN (it simply skips source-map upload at build time). Added /api/debug/sentry route that deliberately throws + calls Sentry.captureException(err), plus tests/api/sentry.test.ts with @jest-environment node that mocks @sentry/nextjs and asserts captureException was called exactly once with the thrown Error instance. Typecheck passes; 30/30 tests pass (including the new one)."
     },
     {
       "id": "US-022",

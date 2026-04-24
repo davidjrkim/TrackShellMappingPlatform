@@ -47,6 +47,8 @@
 - Org-isolation tests (US-019): every correction endpoint returns 404 (not 403) when the caller's org doesn't match the resource. The helpers (getFeatureForMutation / getHoleForMutation / getLock / GET /corrections preflight) all join through `courses.org_id` and return null on mismatch — routes treat null as "not found" and never distinguish "exists elsewhere" from "doesn't exist". When asserting cross-org rejection, always pair the 404 assertion with a "no side-effect" assertion (feature/hole/course row unchanged + zero new corrections rows for the target course_id) so a leaky endpoint that 404s AFTER writing would still fail the test.
 - Jsdom component tests that mock `fetch`: jsdom does NOT expose a global `Response` constructor, so `new Response(JSON.stringify(...), { status })` throws ReferenceError. Use a plain `FakeResponse` helper returning `{ ok: status>=200&&<300, status, json: async () => body }` — the Inspector correction controls only call `.ok`, `.status`, and `.json()` on the result, so the shim is sufficient. Stash `const originalFetch = global.fetch` at module scope and restore in `afterEach` so one test's mock doesn't leak.
 - Inspector correction controls (ReassignHoleControl/ChangeTypeControl) can be driven via fireEvent.change on the select + fireEvent.click on Apply; wrap the click in `await act(async () => { ... })` so the async setState after the fetch resolves settles before assertions. Error path: staged select value is preserved on non-2xx so the user can Retry without re-picking — assert this explicitly in the test.
+- API-route tests that import a route handler must use `@jest-environment node` (docblock at top) — the default jsdom env has no `Request` and NextResponse's import chain blows up with `ReferenceError: Request is not defined`. courses.test.ts, jobs.test.ts, and tests/api/sentry.test.ts all follow this pattern.
+- Sentry 10.x on Next.js 14: server/edge configs load via `instrumentation.ts` register() keyed on `process.env.NEXT_RUNTIME`. Keep three `sentry.*.config.ts` files (client/server/edge) each guarded with `if (dsn) Sentry.init(...)` so local dev without SENTRY_DSN stays silent. `withSentryConfig(nextConfig, { silent: true })` is safe to call even without a DSN at build time.
 ---
 
 ## 2026-04-24 - US-003
@@ -434,4 +436,27 @@
   - Inspector's correction controls preserve the staged select value after a non-2xx response so the user can Retry without re-picking — assert this explicitly in the error-path test; regressing to reset-on-error would be an AC violation under US-012.
   - FEATURE_TYPE_OPTIONS in Inspector.tsx is the source of truth for the dropdown — the test asserts the exact array order. If the list grows, update FEATURE_LABEL and FEATURE_SWATCH in the same file AND this test's expectation.
   - `npx tsc --noEmit` is the project's typecheck command — no explicit `typecheck` script in package.json. Run it after editing tests to catch ambient-types drift early.
+---
+
+## 2026-04-24 - US-021
+- Wired @sentry/nextjs@^10.50.0 into the Next.js app with DSN-gated init so local dev stays quiet when SENTRY_DSN is unset.
+- Files changed:
+  - package.json / package-lock.json (added @sentry/nextjs)
+  - sentry.client.config.ts (new) — reads NEXT_PUBLIC_SENTRY_DSN || SENTRY_DSN, skips init when absent
+  - sentry.server.config.ts (new) — reads SENTRY_DSN, skips init when absent
+  - sentry.edge.config.ts (new) — reads SENTRY_DSN, skips init when absent
+  - instrumentation.ts (new) — Next.js register hook; dynamically imports server or edge config by NEXT_RUNTIME
+  - next.config.mjs — wrapped with withSentryConfig({ silent: true })
+  - app/api/debug/sentry/route.ts (new) — deliberately throws, calls Sentry.captureException, returns 500
+  - tests/api/sentry.test.ts (new) — @jest-environment node, mocks @sentry/nextjs, asserts captureException called once with the Error
+  - prd.json (US-021 passes=true + notes)
+- Verification: npx tsc --noEmit clean; npx jest tests/components tests/api/sentry.test.ts tests/api/health.test.ts → 30/30 pass.
+- **Learnings for future iterations:**
+  - Sentry 10.x uses the Next.js `instrumentation.ts` register() hook to load server/edge configs — the legacy practice of dropping `sentry.server.config.ts` at the project root and letting Next auto-pick it up was removed in Sentry 9. Keep both patterns: the three `sentry.*.config.ts` files for the PRD AC wording, and instrumentation.ts as the actual loader.
+  - `withSentryConfig(nextConfig, { silent: true })` is safe to call even when SENTRY_DSN is unset at build time — it just skips source-map upload. No need to branch on `process.env.SENTRY_DSN` in next.config.mjs.
+  - Guard `Sentry.init({ dsn })` behind `if (dsn)` in each config file — Sentry's own "DSN not provided" warning is loud enough to noise local dev logs every request; the conditional skip keeps the console clean.
+  - `disableLogger: true` was deprecated in Sentry 10.x — it now logs a DEPRECATION WARNING on every Jest run. Use `webpack.treeshake.removeDebugLogging` if the noise needs suppressing, or just drop `disableLogger` and live with it (we dropped it).
+  - API-route tests that import a route handler under jsdom fail with `ReferenceError: Request is not defined` because NextResponse pulls in Next's Request polyfill. Fix: add `@jest-environment node` docblock at the top of the test file — same trick courses.test.ts and jobs.test.ts already use.
+  - Mocking @sentry/nextjs in a test: `jest.mock('@sentry/nextjs', () => ({ captureException: jest.fn(), init: jest.fn() }))` is enough — the route handler only calls captureException, and Sentry's init is invoked at module-load time via the config files which the test doesn't import.
+  - Client config should read `NEXT_PUBLIC_SENTRY_DSN || SENTRY_DSN` — the browser bundle can't see server-only env vars, so if the deployment uses a single SENTRY_DSN for both environments it needs the NEXT_PUBLIC_ prefix to reach the client. Falling back to SENTRY_DSN keeps dev ergonomics simple.
 ---
