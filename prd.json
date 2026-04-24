@@ -81,8 +81,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented app/api/courses/[id]/holes/[holeId]/confirm/route.ts POST. Added migration 20260424000001_add_hole_confirmation_type (CREATE TYPE hole_confirmation_type_enum AS ENUM ('manual','auto'); ALTER TABLE holes ADD COLUMN confirmation_type). Added getHoleForMutation helper in lib/corrections.ts (hole + course org/lock). Atomic $transaction: INSERT corrections ('hole_confirmed', original_hole_number, feature_id NULL), UPDATE holes SET needs_review=false, confirmed=true, confirmation_type='manual', UPDATE features SET reviewed=true WHERE hole_id=$1. Returns updated hole JSON."
     },
     {
       "id": "US-006",

@@ -80,3 +80,40 @@ export async function getHoleRef(
   `
   return rows[0] ?? null
 }
+
+export type HoleForMutation = {
+  id: string
+  course_id: string
+  hole_number: number
+  needs_review: boolean
+  confirmed: boolean
+  org_id: string
+  locked_by: string | null
+  locked_at: Date | null
+}
+
+export async function getHoleForMutation(
+  holeId: string,
+  courseId: string,
+  orgId: string,
+): Promise<HoleForMutation | null> {
+  const rows = await db.$queryRaw<HoleForMutation[]>`
+    SELECT
+      h.id,
+      h.course_id,
+      h.hole_number,
+      h.needs_review,
+      h.confirmed,
+      c.org_id,
+      c.locked_by,
+      c.locked_at
+    FROM holes h
+    JOIN courses c ON c.id = h.course_id
+    WHERE h.id = ${holeId}::uuid
+      AND h.course_id = ${courseId}::uuid
+      AND c.org_id = ${orgId}::uuid
+      AND c.deleted_at IS NULL
+    LIMIT 1
+  `
+  return rows[0] ?? null
+}

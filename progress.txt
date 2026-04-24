@@ -9,6 +9,9 @@
 - UUID regex used for all featureId / holeId params: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.
 - corrections.feature_id has ON DELETE SET NULL — the audit row survives a hard DELETE of the feature, so correction snapshots are the only record after polygon_delete.
 - corrections has no column for feature confidence_score or a raw hole_id — snapshot confidence_score into the notes TEXT column as JSON, and hole identity into original_hole_number via LEFT JOIN holes h ON h.id = f.hole_id.
+- Hole-scoped correction events (e.g. hole_confirmed) set corrections.feature_id = NULL and record hole identity via original_hole_number. feature_id is nullable by design.
+- holes.confirmation_type is a nullable hole_confirmation_type_enum ('manual' | 'auto') — set by US-005 (manual) and US-006 (auto); cast string literals explicitly in raw SQL: `'manual'::hole_confirmation_type_enum`.
+- Prisma + PostGIS interaction: `prisma migrate dev` refuses to run non-interactively and complains about the `bounding_box` PostGIS column it cannot see. Workaround when adding a plain column: create the migration folder under prisma/migrations/<timestamp>_<name>/migration.sql by hand with the ALTER/CREATE TYPE, then `npx prisma migrate deploy` to apply it and record it in _prisma_migrations. Update prisma/schema.prisma alongside so the generated client picks up the new column.
 ---
 
 ## 2026-04-24 - US-003
@@ -49,3 +52,26 @@
   - `INSERT ... SELECT` with a LEFT JOIN is the cleanest way to snapshot multiple feature columns atomically — avoids a preflight read that could go stale between SELECT and DELETE.
   - Returning `new NextResponse(null, { status: 204 })` is the correct way to send 204 from a Next.js route handler — `NextResponse.json(null, { status: 204 })` would fail because 204 forbids a body.
 ---
+
+## 2026-04-24 - US-005
+- Implemented POST /api/courses/[id]/holes/[holeId]/confirm to manually confirm a single hole and mark all its features reviewed.
+- Files changed:
+  - prisma/schema.prisma (added HoleConfirmationType enum + holes.confirmationType column)
+  - prisma/migrations/20260424000001_add_hole_confirmation_type/migration.sql (new — CREATE TYPE + ALTER TABLE holes ADD COLUMN confirmation_type)
+  - lib/corrections.ts (new helper: getHoleForMutation — hole + course org/lock)
+  - app/api/courses/[id]/holes/[holeId]/confirm/route.ts (new)
+  - prd.json (US-005 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Session required (401 otherwise) + UUID-validate both id and holeId (404).
+  2. Load hole via getHoleForMutation (joins courses on org; returns null → 404).
+  3. isLockedByOther → 409.
+  4. `$transaction([INSERT corrections ('hole_confirmed'), UPDATE holes SET needs_review=false, confirmed=true, confirmation_type='manual'::hole_confirmation_type_enum, UPDATE features SET reviewed=true WHERE hole_id=$hole.id])`.
+  5. Returns `{ hole: { id, course_id, hole_number, needs_review:false, confirmed:true, confirmation_type:'manual' } }`.
+- **Learnings for future iterations:**
+  - Prisma migrate dev is blocked here because it sees `bounding_box` (PostGIS) as an orphan column. Create the migration SQL folder by hand, then `npx prisma migrate deploy` to apply and register it — Prisma generate picks up the new column once schema.prisma is in sync.
+  - confirmation_type is a nullable enum — set to 'manual' on US-005 manual confirm, and 'auto' on the US-006 auto-confirm path.
+  - corrections.feature_id is nullable — reuse it for hole-scoped events by passing NULL and recording hole identity in original_hole_number.
+  - US-006 will follow the same shape but must first enforce sign-off gate (400 if any needs_review=true AND confirmed=false) and then auto-confirm the rest via confirmation_type='auto' before flipping courses.status = 'reviewed' and releasing the lock.
+---
+

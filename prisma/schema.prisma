@@ -58,6 +58,13 @@ enum UserRole {
   @@map("user_role_enum")
 }
 
+enum HoleConfirmationType {
+  manual
+  auto
+
+  @@map("hole_confirmation_type_enum")
+}
+
 // ---------------------------------------------------------------------------
 // Tables
 // ---------------------------------------------------------------------------
@@ -136,6 +143,7 @@ model Hole {
   assignmentConfidence Decimal? @map("assignment_confidence") @db.Decimal(4, 3)
   needsReview          Boolean  @default(false) @map("needs_review")
   confirmed            Boolean  @default(false)
+  confirmationType     HoleConfirmationType? @map("confirmation_type")
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
