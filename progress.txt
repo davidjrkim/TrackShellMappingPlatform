@@ -37,6 +37,8 @@
 - Sign-off UI reachability: compute `hasBlockingFlagged = holes.some(h => h.needs_review && !h.confirmed)` on the client as the gate for the "Sign off course" CTA. The server will re-check the same condition on POST /review/complete and return 400 with `blocking_holes: number[]`, so the client gate is UX polish, not a security boundary — always render the server error path too.
 - When a workspace-level modal (DeletePolygonDialog, SignOffDialog) is open, short-circuit the window `keydown` handler at the top (`if (signOffOpen) return`) in addition to whatever per-branch guards exist. Otherwise typing in the notes textarea is fine (isTypingTarget catches that), but clicking outside the textarea still leaves every other shortcut (D, Enter, Ctrl+Z, fit-to-hole) hot on the map underneath. One top-level guard per modal is cleaner than sprinkling guards in every case.
 - For dialogs that navigate away on success, call both `router.push(path)` AND `router.refresh()` — push alone uses the cached server component render (the course status still reads as 'flagged' until the next hard reload). Refresh invalidates the RSC cache so the new 'reviewed' status lands on first paint of the overview.
+- Auto-advance-on-confirm pattern: after the confirm-hole 2xx lands, compute the next flagged hole from a LOCAL `updated` array (not from the `holes` state, which won't have the new confirmed=true yet) and setSelectedHoleId to it. The existing re-center useEffect on selectedHoleId handles fitToHole, so no explicit mapRef.fitToHole call is needed. Sort order: assignment_confidence ASC, then hole_number ASC as tiebreaker — matches HoleList.orderHolesForReview so the UI focus matches what the reviewer sees at the top of the list.
+- To compute derived next-selection state from a just-updated list while avoiding nested setters, refactor `setHoles(prev => prev.map(...))` to `const updated = holes.map(...); setHoles(updated); if (nextFrom(updated)) setSelectedHoleId(...)`. React is fine with two independent setStates in the same callback; batching handles the re-render. Keep the `holes` dep in useCallback so the mapping reads the latest snapshot.
 ---
 
 ## 2026-04-24 - US-003
@@ -277,6 +279,27 @@
   - GET /api/corrections already returns correction_type per row, so client-side reduce-by-type is sufficient. No new server endpoint needed for counts — if this ever gets expensive, revisit and add a dedicated /api/courses/[id]/review/summary endpoint.
   - hasBlockingFlagged on the client is UX only; the server re-gates on POST /review/complete and returns 400 with blocking_holes. Always render the server error path even when the client gate would have prevented it — timing races (another tab, stale state) can slip through.
   - No dev-browser tool in this environment — browser AC for US-014 needs manual verification on npm run dev.
+---
+
+
+## 2026-04-24 - US-015
+- Auto-advance to the next flagged hole after a successful per-hole confirm, plus a "Ready to sign off" CTA banner when all flagged holes are resolved.
+- Files changed:
+  - components/review/ReviewWorkspace.tsx (confirmActiveHole computes next flagged on 2xx and setSelectedHoleId; refactored setHoles updater to local-const pattern so the next-flagged compute sees the updated list without a nested setter. Added top-center green CTA banner shown when !hasBlockingFlagged && !signOffOpen && !confirmError && !undoError.)
+  - prd.json (US-015 passes=true + notes)
+  - progress.txt (this entry + 2 new Codebase Patterns)
+- Flow:
+  1. Reviewer clicks confirm (or hits Enter). POST /confirm 2xx returns.
+  2. Local holes list is updated inline: `const updated = holes.map(h => h.id === selectedHoleId ? {...h, confirmed:true, needs_review:false} : h)` then setHoles(updated).
+  3. Next flagged hole = updated.filter(needs_review && !confirmed).sort(assignment_confidence ASC, hole_number ASC tiebreaker)[0].
+  4. If nextFlagged: setSelectedHoleId(nextFlagged.id) + setSelectedFeatureId(null). The existing fit-to-hole useEffect at line ~583 triggers on selectedHoleId change and re-centers the map automatically.
+  5. If no nextFlagged: hasBlockingFlagged flips false. A green top-center banner renders: "All flagged holes resolved — ready to sign off." with its own "Sign off course" button that opens the SignOffDialog.
+  6. Banner hides when signOffOpen/confirmError/undoError is set, so it never visually stacks with alert banners or the open dialog.
+- **Learnings for future iterations:**
+  - Re-centering on hole change already has a dedicated useEffect — don't also call `mapRef.current?.fitToHole(...)` inline after setSelectedHoleId. That would fire the same request twice (once inline, once on the next render tick via the useEffect) and make the behaviour tough to reason about.
+  - HoleList's orderHolesForReview() is the authoritative ordering the user sees. When programmatically picking "the next hole", sort by the same keys (assignment_confidence ASC, hole_number ASC as tiebreaker) so the UI selection matches the top of the visible list.
+  - The re-render after setHoles + setSelectedHoleId batches into a single paint in React 18 — no flash of the just-confirmed hole before the advance.
+  - No dev-browser tool in this environment — browser AC needs manual verification on npm run dev. Steps: load a course with 2+ flagged holes, confirm one, watch focus move to the next lowest-confidence flagged hole and the map pan/zoom. Confirm the last flagged hole and watch the green CTA banner appear; click it and the sign-off dialog should open.
 ---
 
 

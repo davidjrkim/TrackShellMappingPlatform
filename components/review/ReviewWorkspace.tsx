@@ -404,13 +404,27 @@ export default function ReviewWorkspace({
         setConfirmError(message)
         return
       }
-      setHoles((prev) =>
-        prev.map((h) =>
-          h.id === selectedHoleId
-            ? { ...h, confirmed: true, needs_review: false }
-            : h,
-        ),
+      const updated = holes.map((h) =>
+        h.id === selectedHoleId
+          ? { ...h, confirmed: true, needs_review: false }
+          : h,
       )
+      setHoles(updated)
+      // Auto-advance to the next flagged hole (lowest assignment_confidence).
+      // Falls back to hole_number when confidences tie. When none remain, the
+      // "Ready to sign off" CTA surfaces via hasBlockingFlagged.
+      const nextFlagged = updated
+        .filter((h) => h.needs_review && !h.confirmed)
+        .sort((a, b) => {
+          const ac = a.assignment_confidence ?? 1
+          const bc = b.assignment_confidence ?? 1
+          if (ac !== bc) return ac - bc
+          return a.hole_number - b.hole_number
+        })[0]
+      if (nextFlagged) {
+        setSelectedHoleId(nextFlagged.id)
+        setSelectedFeatureId(null)
+      }
       setHoleFeaturesVersion((v) => v + 1)
       refreshGeoJSON()
     } catch (err) {
@@ -698,6 +712,23 @@ export default function ReviewWorkspace({
             Sign off course
           </button>
         </div>
+
+        {!hasBlockingFlagged && !signOffOpen && !confirmError && !undoError && (
+          <div
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 bg-green-50 border border-green-300 rounded-md px-3 py-1.5 text-xs text-green-900 shadow-sm"
+            data-testid="ready-to-signoff"
+          >
+            <span className="font-medium">All flagged holes resolved — ready to sign off.</span>
+            <button
+              type="button"
+              onClick={() => setSignOffOpen(true)}
+              className="flex-none px-2 py-0.5 rounded-md bg-green-600 text-white hover:bg-green-700"
+              data-testid="ready-to-signoff-cta"
+            >
+              Sign off course
+            </button>
+          </div>
+        )}
 
         {confirmError && (
           <div

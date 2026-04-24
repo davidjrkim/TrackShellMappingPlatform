@@ -240,8 +240,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in components/review/ReviewWorkspace.tsx. confirmActiveHole() now computes the next flagged hole from the locally-updated holes list (filter needs_review=true AND !confirmed, sort by assignment_confidence ASC with hole_number as tiebreaker) and calls setSelectedHoleId(nextFlagged.id) + setSelectedFeatureId(null). The existing re-center useEffect (line ~583) already fires fitToHole on selectedHoleId change, so the map follows automatically — no extra mapRef call needed. When no flagged holes remain, a green 'All flagged holes resolved — ready to sign off.' banner renders at top-center with its own 'Sign off course' CTA (data-testid='ready-to-signoff'/'ready-to-signoff-cta') that opens the SignOffDialog. The banner hides when signOffOpen OR confirmError OR undoError is set so it never stacks with alert banners. The existing map-controls 'Sign off course' button stays as a general entry point. Note: this changed `setHoles((prev) => prev.map(...))` to a local `const updated = holes.map(...); setHoles(updated)` pattern so the next-flagged computation sees the updated state without nesting setter calls — the holes dep in useCallback covers it. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-016",
