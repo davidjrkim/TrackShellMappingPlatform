@@ -11,6 +11,8 @@
 - corrections has no column for feature confidence_score or a raw hole_id — snapshot confidence_score into the notes TEXT column as JSON, and hole identity into original_hole_number via LEFT JOIN holes h ON h.id = f.hole_id.
 - Hole-scoped correction events (e.g. hole_confirmed) set corrections.feature_id = NULL and record hole identity via original_hole_number. feature_id is nullable by design.
 - holes.confirmation_type is a nullable hole_confirmation_type_enum ('manual' | 'auto') — set by US-005 (manual) and US-006 (auto); cast string literals explicitly in raw SQL: `'manual'::hole_confirmation_type_enum`.
+- Course-scoped transactions (e.g. sign-off in US-006) should release the lock inside the same $transaction that flips status — do NOT call releaseLock() separately after the transaction, or a partial failure can leak the lock. UPDATE courses SET status=..., locked_by=NULL, locked_at=NULL in one statement.
+- Sign-off gate query is `SELECT hole_number FROM holes WHERE course_id=$1 AND needs_review=true AND confirmed=false` — return the list as `blocking_holes: number[]` in the 400 body so the UI can render which holes still block sign-off.
 - Prisma + PostGIS interaction: `prisma migrate dev` refuses to run non-interactively and complains about the `bounding_box` PostGIS column it cannot see. Workaround when adding a plain column: create the migration folder under prisma/migrations/<timestamp>_<name>/migration.sql by hand with the ALTER/CREATE TYPE, then `npx prisma migrate deploy` to apply it and record it in _prisma_migrations. Update prisma/schema.prisma alongside so the generated client picks up the new column.
 ---
 
@@ -51,6 +53,28 @@
   - The corrections schema has no column for feature `confidence_score` nor for raw `hole_id`; use `original_hole_number` (join features to holes on hole_id to get the number) and stash `confidence_score` in `notes` as `json_build_object(...)::text`.
   - `INSERT ... SELECT` with a LEFT JOIN is the cleanest way to snapshot multiple feature columns atomically — avoids a preflight read that could go stale between SELECT and DELETE.
   - Returning `new NextResponse(null, { status: 204 })` is the correct way to send 204 from a Next.js route handler — `NextResponse.json(null, { status: 204 })` would fail because 204 forbids a body.
+---
+
+## 2026-04-24 - US-006
+- Implemented POST /api/courses/[id]/review/complete — course sign-off with atomic auto-confirm, status flip, and lock release.
+- Files changed:
+  - app/api/courses/[id]/review/complete/route.ts (new)
+  - prd.json (US-006 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Session required (401) + UUID-validate params.id (404).
+  2. Parse optional body `{ notes?: string }` — tolerate no body, empty string trims to null.
+  3. getLock(courseId, orgId) — org-isolated; null → 404.
+  4. isLockedByOther(lock.locked_by, lock.locked_at, userId) → 409.
+  5. Sign-off gate: SELECT hole_number FROM holes WHERE course_id=$1 AND needs_review=true AND confirmed=false — if any rows, return 400 with `blocking_holes: number[]`.
+  6. `$transaction([INSERT corrections (correction_type='course_signoff', notes), UPDATE features SET reviewed=true WHERE hole_id IN (unconfirmed holes on course), UPDATE holes SET confirmed=true, confirmation_type='auto'::hole_confirmation_type_enum WHERE confirmed=false, UPDATE courses SET status='reviewed'::course_status, locked_by=NULL, locked_at=NULL])`.
+  7. Returns `{ course: { id, status: 'reviewed' }, notes }`.
+- **Learnings for future iterations:**
+  - Lock release for course-scoped writes belongs INSIDE the same transaction as the state flip. If you call releaseLock() after a $transaction completes, a crash between the two leaves the lock dangling and the course un-reviewable until the 2h TTL expires. Inline `SET locked_by=NULL, locked_at=NULL` into the UPDATE courses SET status=... statement instead.
+  - The sign-off gate must be a separate SELECT BEFORE the $transaction — you cannot return a 400 with a helpful list of blocking holes from inside Prisma's transaction callback without throwing and rolling back. The gate is read-only so running it outside the transaction is safe.
+  - corrections.correction_type is a VARCHAR(50) (not an enum), so new event types like 'course_signoff' require no migration — just pick a stable string.
+  - Auto-confirm path leaves confirmation_type='auto' on holes that never had needs_review flag set AND were never manually confirmed. The WHERE `confirmed=false` after the gate is safe because the gate guaranteed zero `needs_review=true AND confirmed=false` rows remain.
+  - Body parsing pattern: `await req.json()` in a try/catch with null fallback — Next.js throws on empty body, so tolerate it for optional-body POSTs.
 ---
 
 ## 2026-04-24 - US-005

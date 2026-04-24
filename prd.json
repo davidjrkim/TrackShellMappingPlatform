@@ -97,8 +97,8 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented app/api/courses/[id]/review/complete/route.ts POST. Optional JSON body { notes?: string }. Uses getLock (org isolation + 404) then isLockedByOther (409). Sign-off gate: SELECT holes WHERE needs_review=true AND confirmed=false → 400 with blocking_holes: number[]. Atomic $transaction: INSERT corrections (correction_type='course_signoff', notes), UPDATE features SET reviewed=true WHERE hole_id IN (unconfirmed holes on course), UPDATE holes SET confirmed=true, confirmation_type='auto'::hole_confirmation_type_enum WHERE confirmed=false, UPDATE courses SET status='reviewed'::course_status, locked_by=NULL, locked_at=NULL. Lock release happens inside the same transaction as status flip (not a separate releaseLock call) so a failed status update cannot leak the lock."
     },
     {
       "id": "US-007",
