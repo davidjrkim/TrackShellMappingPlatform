@@ -6,6 +6,7 @@ import HoleList, { type HoleSummary } from './HoleList'
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas'
 import Inspector, { type InspectorFeature } from './Inspector'
 import DrawMode from '@/components/map/DrawMode'
+import DeletePolygonDialog from './DeletePolygonDialog'
 
 type LockInfo = {
   locked_by: string | null
@@ -68,6 +69,7 @@ export default function ReviewWorkspace({
 
   const [mapInstance, setMapInstance] = useState<MapLibreMap | null>(null)
   const [drawModeActive, setDrawModeActive] = useState(false)
+  const [deleteDialogFeature, setDeleteDialogFeature] = useState<InspectorFeature | null>(null)
 
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
@@ -226,6 +228,18 @@ export default function ReviewWorkspace({
     refreshGeoJSON()
   }, [refreshGeoJSON])
 
+  const onRequestDeleteFeature = useCallback((feature: InspectorFeature) => {
+    setDeleteDialogFeature(feature)
+  }, [])
+
+  const onDeleteSuccess = useCallback(() => {
+    setDeleteDialogFeature(null)
+    setSelectedFeatureId(null)
+    if (drawModeActive) setDrawModeActive(false)
+    setHoleFeaturesVersion((v) => v + 1)
+    refreshGeoJSON()
+  }, [drawModeActive, refreshGeoJSON])
+
   // Exit draw mode if the selected feature clears. Otherwise DrawMode would
   // keep editing a feature that is no longer in focus.
   useEffect(() => {
@@ -316,6 +330,7 @@ export default function ReviewWorkspace({
         }
         case 'Escape': {
           if (drawModeActive) break
+          if (deleteDialogFeature) break
           setSelectedFeatureId(null)
           break
         }
@@ -327,11 +342,22 @@ export default function ReviewWorkspace({
           }
           break
         }
+        case 'Delete':
+        case 'Backspace': {
+          if (!selectedFeatureId) break
+          if (drawModeActive) break
+          if (deleteDialogFeature) break
+          const hit = holeFeatures.find((f) => f.id === selectedFeatureId)
+          if (!hit) break
+          e.preventDefault()
+          setDeleteDialogFeature(hit)
+          break
+        }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive])
+  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -436,8 +462,17 @@ export default function ReviewWorkspace({
         onSelectFeature={(id) => setSelectedFeatureId(id)}
         onReassignSuccess={onReassignSuccess}
         onTypeChangeSuccess={onTypeChangeSuccess}
+        onRequestDeleteFeature={onRequestDeleteFeature}
         loading={holeFeaturesLoading}
       />
+
+      {deleteDialogFeature && (
+        <DeletePolygonDialog
+          feature={deleteDialogFeature}
+          onCancel={() => setDeleteDialogFeature(null)}
+          onSuccess={onDeleteSuccess}
+        />
+      )}
     </div>
   )
 }

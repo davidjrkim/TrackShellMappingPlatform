@@ -27,6 +27,9 @@
 - To get the MapLibre map instance from MapCanvas for sibling components (DrawMode overlay etc.), add a `getMap(): MapLibreMap | null` method to MapCanvasHandle AND expose an `onMapReady(map)` prop that fires from the map `load` event — state-backed is needed because a ref doesn't trigger re-renders.
 - Review UI keyboard handlers: when draw mode is active, short-circuit the default Escape handler that deselects the feature — otherwise a single Esc both exits draw mode and deselects. Add `drawModeActive` as a dep to the keydown effect and guard the Escape branch with `if (drawModeActive) break`.
 - Draw's direct_select mode works per-polygon. When seeding a MultiPolygon, unwrap/rewrap via helpers: accept either Polygon or MultiPolygon back from draw.update and normalise to MultiPolygon before POSTing (PATCH /geometry requires MultiPolygon and lib/spatial.ts ST_Multi wraps any residual Polygon anyway).
+- Destructive modals (e.g. DeletePolygonDialog) should attach their Escape-to-cancel listener with useCapture=true AND stopPropagation(), because the ReviewWorkspace has its own window-level Escape handler that deselects the feature — without the capture+stop combo a single Esc both closes the dialog AND clears selection. Back it up with a `if (deleteDialogFeature) break` guard in the workspace handler for safety.
+- Keyboard shortcuts that mutate state (Delete/Backspace to open delete dialog, D to toggle draw mode) must be listed in the keydown effect's dep array — not just the state they read. Otherwise the effect closes over stale booleans like drawModeActive/deleteDialogFeature and the guards silently fail.
+- Render overlay modals at the ReviewWorkspace level, not inside a side panel — the right-panel Inspector has its own stacking context, which breaks a `fixed inset-0` overlay's positioning. The workspace root is the correct anchor for any full-screen dialog.
 ---
 
 ## 2026-04-24 - US-003
@@ -152,6 +155,30 @@
   - The MapLibre map instance needs to be shared with sibling components (DrawMode lives alongside MapCanvas, not inside). Two parts: (a) add `getMap()` to MapCanvasHandle, (b) fire an `onMapReady(map)` callback from the map load event and store it as STATE in ReviewWorkspace — a ref alone won't re-render DrawMode when the map becomes available.
   - Don't forget to add `drawModeActive` as a dep of the global keydown effect and guard Escape: otherwise `Esc` both exits draw mode AND deselects the feature in one keystroke. Users expect Esc to step back one level at a time.
   - mapbox-gl-draw's `direct_select` mode normalises MultiPolygon -> Polygon when only one polygon is present; always wrap back to MultiPolygon before POSTing to PATCH /geometry. lib/spatial.ts's ST_Multi wrap also rescues us server-side but be explicit client-side too.
+---
+
+## 2026-04-24 - US-010
+- Added a confirmation modal for polygon delete plus Delete/Backspace keyboard shortcut.
+- Files changed:
+  - components/review/DeletePolygonDialog.tsx (new — fixed-inset role=dialog modal, capture-phase Escape handler with stopPropagation, DELETE /api/features/[id], inline role=alert error on non-2xx, submitting state disables both buttons)
+  - components/review/Inspector.tsx (FeatureView gains red "Delete polygon" button + onRequestDelete prop; Inspector takes new onRequestDeleteFeature Props field)
+  - components/review/ReviewWorkspace.tsx (deleteDialogFeature state, onRequestDeleteFeature + onDeleteSuccess callbacks, Delete/Backspace key in keydown effect with typing-target guard, renders <DeletePolygonDialog> at workspace root so the overlay sits above everything)
+  - prd.json (US-010 passes=true + notes)
+  - progress.txt (this entry + 3 Codebase Patterns)
+- Flow:
+  1. User selects a polygon on the map or in HoleView list → FeatureView renders in Inspector.
+  2. User either clicks "Delete polygon" button OR presses Delete/Backspace → setDeleteDialogFeature(feature).
+  3. Modal renders over the whole workspace, shows feature_type, hole number, and "This cannot be undone" warning.
+  4. Cancel / Esc closes the modal, no network request, feature/selection state untouched.
+  5. Confirm → DELETE /api/features/[featureId]. 2xx → onDeleteSuccess: clears deleteDialogFeature + selectedFeatureId, exits drawModeActive if on, bumps holeFeaturesVersion to refetch the hole's feature list, calls refreshGeoJSON() to update the map overlay. Non-2xx → inline error inside the modal, modal stays open for retry, original geometry untouched.
+- Guards:
+  - isTypingTarget at the top of the keydown effect skips Delete/Backspace while focus is in INPUT/TEXTAREA/SELECT (so Backspace in the reassign/type dropdowns never deletes).
+  - Delete/Backspace short-circuits if drawModeActive or deleteDialogFeature is already set, preventing double-opens.
+  - Escape handler in ReviewWorkspace breaks early when deleteDialogFeature is set, belt-and-braces with the dialog's own capture-phase stopPropagation.
+- **Learnings for future iterations:**
+  - Render overlay modals at the ReviewWorkspace level, not inside the Inspector right panel — Inspector has its own stacking context and a `fixed inset-0` nested inside can be clipped/positioned oddly.
+  - Destructive-action dialogs need a capture-phase Esc handler with stopPropagation when another component owns a bubble-phase Esc handler on window; otherwise one keystroke cascades (close dialog → deselect feature → etc.).
+  - Next Inspector prop additions should keep the pattern: require the callback in Props, pass through from ReviewWorkspace — do not default to a no-op fallback, which hides wiring bugs.
 ---
 
 ## 2026-04-24 - US-005

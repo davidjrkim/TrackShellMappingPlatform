@@ -161,8 +161,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented components/review/DeletePolygonDialog.tsx (fixed-inset modal, role=dialog, aria-modal, Escape closes via capture-phase listener with stopPropagation so the underlying ReviewWorkspace Esc handler doesn't also fire). Inspector FeatureView gained a red 'Delete polygon' button that calls onRequestDeleteFeature(feature) — Inspector takes the new prop, wires it to ReviewWorkspace. ReviewWorkspace owns deleteDialogFeature state; the dialog is rendered at the workspace level (not inside the right panel) so the overlay sits above everything. Delete/Backspace keyboard shortcut opens the dialog by looking up the selected feature in holeFeatures; guarded by (selectedFeatureId && !drawModeActive && !deleteDialogFeature). isTypingTarget guard at the top of the keydown effect covers INPUT/SELECT/TEXTAREA, so Backspace inside the reassign/type selects never triggers delete. onDeleteSuccess clears deleteDialogFeature, clears selectedFeatureId, exits drawModeActive if open, bumps holeFeaturesVersion (polygon list refetch) and calls refreshGeoJSON() (map overlay refresh). Non-2xx surfaces inline role=alert inside the dialog; modal stays open for retry; submitting disables both buttons. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-011",

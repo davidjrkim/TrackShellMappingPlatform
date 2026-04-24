@@ -34,6 +34,7 @@ type Props = {
   onSelectFeature: (featureId: string | null) => void
   onReassignSuccess: (newHoleId: string) => void
   onTypeChangeSuccess: () => void
+  onRequestDeleteFeature: (feature: InspectorFeature) => void
   loading?: boolean
 }
 
@@ -73,6 +74,7 @@ export default function Inspector({
   onSelectFeature,
   onReassignSuccess,
   onTypeChangeSuccess,
+  onRequestDeleteFeature,
   loading = false,
 }: Props) {
   const selectedFeature = selectedFeatureId
@@ -95,6 +97,7 @@ export default function Inspector({
           onBack={() => onSelectFeature(null)}
           onReassignSuccess={onReassignSuccess}
           onTypeChangeSuccess={onTypeChangeSuccess}
+          onRequestDelete={() => onRequestDeleteFeature(selectedFeature)}
         />
       ) : (
         <HoleView hole={hole} features={features} topology={topology} loading={loading} onSelectFeature={onSelectFeature} />
@@ -252,12 +255,14 @@ function FeatureView({
   onBack,
   onReassignSuccess,
   onTypeChangeSuccess,
+  onRequestDelete,
 }: {
   feature: InspectorFeature
   holes: HoleSummary[]
   onBack: () => void
   onReassignSuccess: (newHoleId: string) => void
   onTypeChangeSuccess: () => void
+  onRequestDelete: () => void
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -290,6 +295,17 @@ function FeatureView({
           feature={feature}
           onSuccess={onTypeChangeSuccess}
         />
+
+        <div className="pt-3 mt-2 border-t border-gray-100">
+          <button
+            type="button"
+            onClick={onRequestDelete}
+            className="w-full px-3 py-1.5 text-xs rounded-md border border-red-300 text-red-700 hover:bg-red-50"
+            data-testid="delete-polygon-open"
+          >
+            Delete polygon
+          </button>
+        </div>
       </div>
     </div>
   )
