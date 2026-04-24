@@ -145,25 +145,25 @@ End-to-end path lands at **end of Week 6**.
 
 ---
 
-## Week 5 — Review UI: Structure + Navigation
+## Week 5 — Review UI: Structure + Navigation ✅ COMPLETE
 
 *Goal: Reviewer can open a course, navigate holes, inspect polygons (read-only)*
 
 ### API routes
-- [ ] `GET /api/courses/[id]/review` — full review state: holes + flags + polygon lists + topology check results + progress
-- [ ] `GET /api/courses/[id]/features/geojson` — full FeatureCollection for map canvas
-- [ ] `GET /api/courses/[id]/holes/[holeId]` — single hole detail
-- [ ] Lock endpoints: `POST /api/courses/[id]/lock` (acquire — 409 if held, auto-release > 2h), `DELETE /api/courses/[id]/lock` (release)
+- [x] `GET /api/courses/[id]/review` — full review state: holes + flags + polygon lists + topology check results + progress
+- [x] `GET /api/courses/[id]/features/geojson` — full FeatureCollection for map canvas
+- [x] `GET /api/courses/[id]/holes/[holeId]` — single hole detail
+- [x] Lock endpoints: `POST /api/courses/[id]/lock` (acquire — 409 if held, auto-release > 2h), `DELETE /api/courses/[id]/lock` (release)
 
 ### UI — three-panel layout
-- [ ] `/courses/[id]/review` page — 240px hole list + flex map canvas + 320px inspector
-- [ ] `components/review/HoleList.tsx` — flagged holes sorted by `assignment_confidence ASC` at top; confirmed holes below in hole-number order; progress counter
-- [ ] `components/review/MapCanvas.tsx` — MapLibre GL, satellite base, polygon layers with PRD 2b §5.2 colour opacities; active hole full-opacity with blue outline, others dimmed
-- [ ] `components/review/Inspector.tsx` — hole view (polygon list + topology check) and polygon view (metadata) — **read-only in Week 5**
-- [ ] Lock acquired on page mount; released on unmount / navigation away; 409 banner if held by another reviewer
+- [x] `/courses/[id]/review` page — 240px hole list + flex map canvas + 320px inspector
+- [x] `components/review/HoleList.tsx` — flagged holes sorted by `assignment_confidence ASC` at top; confirmed holes below in hole-number order; progress counter
+- [x] `components/review/MapCanvas.tsx` — MapLibre GL, satellite base, polygon layers with PRD 2b §5.2 colour opacities; active hole full-opacity with blue outline, others dimmed
+- [x] `components/review/Inspector.tsx` — hole view (polygon list + topology check) and polygon view (metadata) — **read-only in Week 5**
+- [x] Lock acquired on page mount; released on unmount / navigation away; 409 banner if held by another reviewer
 
 ### Keyboard shortcuts (Week 5 subset)
-- [ ] ↑ / ↓ hole nav, F fit-to-hole, C fit-to-course, Escape deselect
+- [x] ↑ / ↓ hole nav, F fit-to-hole, C fit-to-course, Escape deselect
 
 **Milestone M5 — Review Readable:** ✅ three-panel UI navigable, all polygons visible.
 
@@ -229,7 +229,7 @@ All mutations must write a `corrections` row **first**, in the same transaction 
 | M2 — Courses | 2 | ✅ |
 | M3 — Jobs | 3 | ✅ |
 | M4 — Dashboard Complete | 4 | ✅ (code); Vercel/Sentry provisioning pending |
-| M5 — Review Readable | 5 |   |
+| M5 — Review Readable | 5 | ✅ |
 | **M6 — MVP** | 6 |   |
 | M7 — Production | 7 |   |
 
