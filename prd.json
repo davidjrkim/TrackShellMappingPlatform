@@ -355,8 +355,8 @@
         "Typecheck passes"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added scripts/perf-check.ts — a ts-node runnable that measures the three MVP NFRs (library page < 1.5s, GET /api/courses/[id]/features/geojson < 2s, PATCH /api/features/[featureId]/hole round-trip < 500ms) against a running dashboard. Auth is handled by the operator pasting a logged-in browser's next-auth.session-token into PERF_SESSION_COOKIE — NextAuth's credential+CSRF handshake is not worth reimplementing for a perf probe. Correction test toggles hole A→B and restores to A so repeat runs are idempotent. Prints a console.table pass/fail and exits non-zero on any miss. Added npm run perf:check (uses TS_NODE_COMPILER_OPTIONS env override for CommonJS because package.json inline --compiler-options with escaped JSON breaks under zsh). Documented in README.md under 'Performance validation'. Typecheck passes (npx tsc --noEmit clean)."
     }
   ]
 }

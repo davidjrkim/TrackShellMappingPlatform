@@ -49,6 +49,7 @@
 - Inspector correction controls (ReassignHoleControl/ChangeTypeControl) can be driven via fireEvent.change on the select + fireEvent.click on Apply; wrap the click in `await act(async () => { ... })` so the async setState after the fetch resolves settles before assertions. Error path: staged select value is preserved on non-2xx so the user can Retry without re-picking — assert this explicitly in the test.
 - API-route tests that import a route handler must use `@jest-environment node` (docblock at top) — the default jsdom env has no `Request` and NextResponse's import chain blows up with `ReferenceError: Request is not defined`. courses.test.ts, jobs.test.ts, and tests/api/sentry.test.ts all follow this pattern.
 - Sentry 10.x on Next.js 14: server/edge configs load via `instrumentation.ts` register() keyed on `process.env.NEXT_RUNTIME`. Keep three `sentry.*.config.ts` files (client/server/edge) each guarded with `if (dsn) Sentry.init(...)` so local dev without SENTRY_DSN stays silent. `withSentryConfig(nextConfig, { silent: true })` is safe to call even without a DSN at build time.
+- ts-node from an npm script: the `"ts-node --compiler-options {\"module\":\"CommonJS\"} foo.ts"` pattern (used by prisma/seed) breaks under `npm run <name>` in zsh because the JSON braces get stripped before ts-node's arg parser sees them. Prefer `TS_NODE_COMPILER_OPTIONS='{"module":"CommonJS"}' ts-node foo.ts` as an env-var prefix — shell-safe, identical effect. Applies to any one-file CJS script (scripts/perf-check.ts follows this).
 ---
 
 ## 2026-04-24 - US-003
@@ -475,4 +476,21 @@
   - next-auth's withAuth middleware returns 307 (temporary redirect) on unauthenticated dashboard requests in Next.js 14. Allow both 307 and 302 in the assertion for resilience against minor behavior changes.
   - Prefer `steps.deploy.outputs.url` over a STAGING_URL env var for post-deploy smoke tests — it targets the freshly deployed URL for both prod and preview, and doesn't need a separate secret.
   - Workflow YAML typecheck isn't part of `tsc --noEmit`; GitHub's Actions YAML lints only at push time. Keep the step names unique so the logs are greppable.
+---
+
+## 2026-04-24 - US-023
+- Added scripts/perf-check.ts — ts-node runnable that probes a live dashboard for the three MVP NFRs from ROADMAP.md §"Success Metrics" and prints a pass/fail table (exit 1 on any miss).
+- Files changed:
+  - scripts/perf-check.ts (new)
+  - package.json (added "perf:check" script)
+  - README.md (new "Performance validation" section documenting env vars + usage)
+  - prd.json (US-023 passes=true)
+- Flow: requireEnv guards on PERF_BASE_URL / PERF_SESSION_COOKIE / PERF_COURSE_ID / PERF_FEATURE_ID / PERF_HOLE_ID_A / PERF_HOLE_ID_B → timed() wrapper using performance.now() → (1) GET /dashboard/courses vs 1500ms, (2) GET /api/courses/[id]/features/geojson vs 2000ms, (3) PATCH /api/features/[featureId]/hole vs 500ms. Correction toggles hole A→B and best-effort restores to A afterward so repeat runs are idempotent.
+- **Learnings for future iterations:**
+  - NextAuth + credential provider makes programmatic perf auth painful: CSRF token fetch + login POST + cookie parse just to get a session. For one-shot perf probes, have the operator paste `next-auth.session-token=...` from DevTools into `PERF_SESSION_COOKIE`. Document it in README.
+  - package.json inline ts-node `--compiler-options {\"module\":\"CommonJS\"}` args (the pattern used by prisma seed) don't survive zsh's JSON-brace parsing when invoked via `npm run <script>` — the quotes get collapsed and ts-node's arg parser throws "Expected property name or '}'". Use `TS_NODE_COMPILER_OPTIONS='{"module":"CommonJS"}'` as an env var prefix instead — shell-safe and ts-node reads it at startup.
+  - `npx tsc --noEmit` respects tsconfig `include: ["**/*.ts"]`, so anything dropped into scripts/ gets typechecked without extra wiring. No need for a separate tsconfig.scripts.json for simple one-file utilities.
+  - Node 20+ has global `fetch` + DOM `Response` in tsconfig `lib: ["dom", ...]` — no need to import from undici or polyfill in a Node script that only calls fetch. Keep scripts dependency-free.
+  - The pre-existing jobs.test.ts "Cannot find module '@/lib/pipeline'" failure is unrelated (present on the tip of the branch before this story), not introduced by perf-check.
+  - Redirect tolerance in smoke/perf scripts: allow 307/302 but surface them as `note: "HTTP 307 (likely unauthenticated — cookie expired?)"` so the operator knows the cookie rolled. Don't pass-fail a redirect just for being redirected — it's a measurement artifact, not a perf failure.
 ---
