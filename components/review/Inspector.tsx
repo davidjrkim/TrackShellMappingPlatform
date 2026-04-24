@@ -32,8 +32,15 @@ type Props = {
   holes: HoleSummary[]
   selectedFeatureId: string | null
   onSelectFeature: (featureId: string | null) => void
-  onReassignSuccess: (newHoleId: string) => void
-  onTypeChangeSuccess: () => void
+  onReassignSuccess: (payload: {
+    featureId: string
+    newHoleId: string
+    priorHoleId: string | null
+  }) => void
+  onTypeChangeSuccess: (payload: {
+    featureId: string
+    priorType: string
+  }) => void
   onRequestDeleteFeature: (feature: InspectorFeature) => void
   loading?: boolean
 }
@@ -260,8 +267,8 @@ function FeatureView({
   feature: InspectorFeature
   holes: HoleSummary[]
   onBack: () => void
-  onReassignSuccess: (newHoleId: string) => void
-  onTypeChangeSuccess: () => void
+  onReassignSuccess: Props['onReassignSuccess']
+  onTypeChangeSuccess: Props['onTypeChangeSuccess']
   onRequestDelete: () => void
 }) {
   return (
@@ -318,7 +325,7 @@ function ReassignHoleControl({
 }: {
   feature: InspectorFeature
   holes: HoleSummary[]
-  onSuccess: (newHoleId: string) => void
+  onSuccess: Props['onReassignSuccess']
 }) {
   const orderedHoles = [...holes].sort((a, b) => a.hole_number - b.hole_number)
   const currentHole = orderedHoles.find((h) => h.hole_number === feature.hole_number)
@@ -357,7 +364,11 @@ function ReassignHoleControl({
         setError(message)
         return
       }
-      onSuccess(selectedHoleId)
+      onSuccess({
+        featureId: feature.id,
+        newHoleId: selectedHoleId,
+        priorHoleId: currentHoleId || null,
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Reassign failed')
     } finally {
@@ -427,7 +438,7 @@ function ChangeTypeControl({
   onSuccess,
 }: {
   feature: InspectorFeature
-  onSuccess: () => void
+  onSuccess: Props['onTypeChangeSuccess']
 }) {
   const currentType = feature.feature_type
   const [selectedType, setSelectedType] = useState<string>(currentType)
@@ -461,7 +472,7 @@ function ChangeTypeControl({
         setError(message)
         return
       }
-      onSuccess()
+      onSuccess({ featureId: feature.id, priorType: currentType })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Type change failed')
     } finally {

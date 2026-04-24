@@ -176,8 +176,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in ReviewWorkspace.tsx with a LastCorrection discriminated union ({kind:'reassign'|'type'|'geometry', undoable:true, ...prior snapshot} | {kind:'delete', undoable:false, reason}). Success callbacks from Inspector and DrawMode record the inverse payload; onReassignSuccess and onTypeChangeSuccess signatures were extended to carry prior values from the control at Apply time; geometry prior comes from the existing selectedFeatureGeometry memo before the refreshGeoJSON lands the new one. Ctrl+Z (and ⌘+Z) handled in the global keydown effect — preflight guards: drawModeActive, deleteDialogFeature, lastCorrection absent/non-undoable → no-op. applyUndo dispatches the inverse PATCH directly (not via Inspector) so the slot is cleared on success without re-registering an undo-of-undo. Reassign undo restores selectedHoleId to the prior hole so the user sees the polygon back where it started. Delete records a non-undoable slot with a reason string so the Undo button surfaces WHY it's disabled (no feature-insert endpoint yet, matching AC's 'otherwise undo is disabled with tooltip' clause). UI: Undo button in the map top-right controls showing 'Undo <kind> (Ctrl+Z)' and a title tooltip; inline role=alert error shown at top-center on non-2xx. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-012",

@@ -29,6 +29,43 @@ type Props = {
   initialLock: LockInfo
 }
 
+// PRD §5 Ctrl+Z: single-level undo. Each successful correction records an
+// inverse payload here. Applying the undo clears the slot (no undo-of-undo).
+// Delete records a non-undoable entry so the button can surface a tooltip
+// instead of silently going dead.
+type LastCorrection =
+  | {
+      kind: 'reassign'
+      undoable: true
+      featureId: string
+      priorHoleId: string
+      priorHoleNumber: number | null
+    }
+  | {
+      kind: 'type'
+      undoable: true
+      featureId: string
+      priorType: string
+    }
+  | {
+      kind: 'geometry'
+      undoable: true
+      featureId: string
+      priorGeometry: GeoJSON.MultiPolygon
+    }
+  | {
+      kind: 'delete'
+      undoable: false
+      reason: string
+    }
+
+function polygonToMultiPolygon(
+  geom: GeoJSON.MultiPolygon | GeoJSON.Polygon,
+): GeoJSON.MultiPolygon {
+  if (geom.type === 'MultiPolygon') return geom
+  return { type: 'MultiPolygon', coordinates: [geom.coordinates] }
+}
+
 type HoleFeatureResponse = {
   hole: {
     id: string
@@ -70,6 +107,10 @@ export default function ReviewWorkspace({
   const [mapInstance, setMapInstance] = useState<MapLibreMap | null>(null)
   const [drawModeActive, setDrawModeActive] = useState(false)
   const [deleteDialogFeature, setDeleteDialogFeature] = useState<InspectorFeature | null>(null)
+
+  const [lastCorrection, setLastCorrection] = useState<LastCorrection | null>(null)
+  const [undoInFlight, setUndoInFlight] = useState(false)
+  const [undoError, setUndoError] = useState<string | null>(null)
 
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
@@ -213,20 +254,44 @@ export default function ReviewWorkspace({
   }, [courseId, selectedHoleId, holeFeaturesVersion])
 
   const onReassignSuccess = useCallback(
-    (newHoleId: string) => {
+    (payload: { featureId: string; newHoleId: string; priorHoleId: string | null }) => {
       // Polygon now belongs to a different hole — switch to it so the
       // Inspector and map both stay focused on the moved feature.
-      setSelectedHoleId(newHoleId)
+      setSelectedHoleId(payload.newHoleId)
       setSelectedFeatureId(null)
+      if (payload.priorHoleId) {
+        const priorHole = holes.find((h) => h.id === payload.priorHoleId) ?? null
+        setLastCorrection({
+          kind: 'reassign',
+          undoable: true,
+          featureId: payload.featureId,
+          priorHoleId: payload.priorHoleId,
+          priorHoleNumber: priorHole?.hole_number ?? null,
+        })
+      } else {
+        // Feature was previously unassigned — no prior hole to restore.
+        setLastCorrection(null)
+      }
+      setUndoError(null)
+      refreshGeoJSON()
+    },
+    [holes, refreshGeoJSON],
+  )
+
+  const onTypeChangeSuccess = useCallback(
+    (payload: { featureId: string; priorType: string }) => {
+      setLastCorrection({
+        kind: 'type',
+        undoable: true,
+        featureId: payload.featureId,
+        priorType: payload.priorType,
+      })
+      setUndoError(null)
+      setHoleFeaturesVersion((v) => v + 1)
       refreshGeoJSON()
     },
     [refreshGeoJSON],
   )
-
-  const onTypeChangeSuccess = useCallback(() => {
-    setHoleFeaturesVersion((v) => v + 1)
-    refreshGeoJSON()
-  }, [refreshGeoJSON])
 
   const onRequestDeleteFeature = useCallback((feature: InspectorFeature) => {
     setDeleteDialogFeature(feature)
@@ -236,9 +301,74 @@ export default function ReviewWorkspace({
     setDeleteDialogFeature(null)
     setSelectedFeatureId(null)
     if (drawModeActive) setDrawModeActive(false)
+    // No feature-insert endpoint exists yet, so a polygon_delete cannot be
+    // reversed from the client. Record a disabled slot so Undo surfaces
+    // *why* rather than looking broken.
+    setLastCorrection({
+      kind: 'delete',
+      undoable: false,
+      reason: 'Deleted polygons cannot be restored from the reviewer UI',
+    })
+    setUndoError(null)
     setHoleFeaturesVersion((v) => v + 1)
     refreshGeoJSON()
   }, [drawModeActive, refreshGeoJSON])
+
+  const applyUndo = useCallback(async () => {
+    if (!lastCorrection || !lastCorrection.undoable) return
+    if (undoInFlight) return
+    setUndoInFlight(true)
+    setUndoError(null)
+    try {
+      let res: Response
+      switch (lastCorrection.kind) {
+        case 'reassign':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/hole`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ holeId: lastCorrection.priorHoleId }),
+          })
+          break
+        case 'type':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/type`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ featureType: lastCorrection.priorType }),
+          })
+          break
+        case 'geometry':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/geometry`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ geometry: lastCorrection.priorGeometry }),
+          })
+          break
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Undo failed (${res.status})`
+        setUndoError(message)
+        return
+      }
+      // Reassign undo: restore selection to the original hole so the user
+      // can see the polygon back where it started.
+      if (lastCorrection.kind === 'reassign') {
+        setSelectedHoleId(lastCorrection.priorHoleId)
+        setSelectedFeatureId(null)
+      }
+      // Single-level undo — clear the slot so Ctrl+Z can't stack.
+      setLastCorrection(null)
+      setHoleFeaturesVersion((v) => v + 1)
+      refreshGeoJSON()
+    } catch (err) {
+      setUndoError(err instanceof Error ? err.message : 'Undo failed')
+    } finally {
+      setUndoInFlight(false)
+    }
+  }, [lastCorrection, refreshGeoJSON, undoInFlight])
 
   // Exit draw mode if the selected feature clears. Otherwise DrawMode would
   // keep editing a feature that is no longer in focus.
@@ -260,10 +390,19 @@ export default function ReviewWorkspace({
   }, [featureCollection, selectedFeatureId])
 
   const onDrawSaved = useCallback(() => {
+    if (selectedFeatureId && selectedFeatureGeometry) {
+      setLastCorrection({
+        kind: 'geometry',
+        undoable: true,
+        featureId: selectedFeatureId,
+        priorGeometry: polygonToMultiPolygon(selectedFeatureGeometry),
+      })
+      setUndoError(null)
+    }
     setDrawModeActive(false)
     setHoleFeaturesVersion((v) => v + 1)
     refreshGeoJSON()
-  }, [refreshGeoJSON])
+  }, [refreshGeoJSON, selectedFeatureGeometry, selectedFeatureId])
 
   // Deselect feature when switching holes
   useEffect(() => {
@@ -302,6 +441,15 @@ export default function ReviewWorkspace({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return
+      // Ctrl+Z / ⌘+Z — single-level undo of the last correction.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+        if (drawModeActive) return
+        if (deleteDialogFeature) return
+        if (!lastCorrection || !lastCorrection.undoable) return
+        e.preventDefault()
+        void applyUndo()
+        return
+      }
       switch (e.key) {
         case 'ArrowDown': {
           e.preventDefault()
@@ -357,7 +505,7 @@ export default function ReviewWorkspace({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature])
+  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, lastCorrection, applyUndo])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -444,7 +592,35 @@ export default function ReviewWorkspace({
           >
             Fit to course (C)
           </button>
+          {lastCorrection && (() => {
+            const enabled = lastCorrection.undoable && !undoInFlight
+            const title = lastCorrection.undoable
+              ? `Undo last ${lastCorrection.kind} (Ctrl+Z)`
+              : lastCorrection.reason
+            return (
+              <button
+                type="button"
+                onClick={enabled ? () => void applyUndo() : undefined}
+                disabled={!enabled}
+                title={title}
+                className="px-2.5 py-1.5 text-xs rounded-md bg-white/95 border border-gray-300 text-gray-700 hover:bg-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="undo-last-correction"
+              >
+                {undoInFlight ? 'Undoing…' : `Undo ${lastCorrection.kind} (Ctrl+Z)`}
+              </button>
+            )
+          })()}
         </div>
+
+        {undoError && (
+          <div
+            role="alert"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
+            data-testid="undo-error"
+          >
+            {undoError}
+          </div>
+        )}
 
         {lockState.status === 'error' && (
           <div className="absolute top-3 left-3 z-10 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm">

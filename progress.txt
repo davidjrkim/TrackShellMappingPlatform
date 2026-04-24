@@ -30,6 +30,8 @@
 - Destructive modals (e.g. DeletePolygonDialog) should attach their Escape-to-cancel listener with useCapture=true AND stopPropagation(), because the ReviewWorkspace has its own window-level Escape handler that deselects the feature — without the capture+stop combo a single Esc both closes the dialog AND clears selection. Back it up with a `if (deleteDialogFeature) break` guard in the workspace handler for safety.
 - Keyboard shortcuts that mutate state (Delete/Backspace to open delete dialog, D to toggle draw mode) must be listed in the keydown effect's dep array — not just the state they read. Otherwise the effect closes over stale booleans like drawModeActive/deleteDialogFeature and the guards silently fail.
 - Render overlay modals at the ReviewWorkspace level, not inside a side panel — the right-panel Inspector has its own stacking context, which breaks a `fixed inset-0` overlay's positioning. The workspace root is the correct anchor for any full-screen dialog.
+- Single-level undo pattern: ReviewWorkspace owns a `LastCorrection` discriminated union that records the INVERSE payload after each successful correction. Success callbacks from child controls carry the prior value (Inspector's ReassignHoleControl/ChangeTypeControl now pass {featureId, priorHoleId|priorType}); geometry prior is captured from the existing `selectedFeatureGeometry` memo before the refresh lands. Undo dispatches a fetch DIRECTLY from the workspace rather than re-entering the Inspector flow — re-entering would re-fire the success callback and register an undo-of-undo, defeating single-level. On success clear the slot + refresh; on failure surface inline error and leave the slot so the user can retry.
+- For non-reversible corrections (polygon_delete — no feature-insert endpoint yet), record a `{undoable: false, reason}` slot instead of leaving the slot null. That lets the Undo button render disabled WITH a tooltip explaining why, which satisfies the AC's "otherwise undo is disabled with tooltip" clause. A null slot would just hide the control silently.
 ---
 
 ## 2026-04-24 - US-003
@@ -179,6 +181,28 @@
   - Render overlay modals at the ReviewWorkspace level, not inside the Inspector right panel — Inspector has its own stacking context and a `fixed inset-0` nested inside can be clipped/positioned oddly.
   - Destructive-action dialogs need a capture-phase Esc handler with stopPropagation when another component owns a bubble-phase Esc handler on window; otherwise one keystroke cascades (close dialog → deselect feature → etc.).
   - Next Inspector prop additions should keep the pattern: require the callback in Props, pass through from ReviewWorkspace — do not default to a no-op fallback, which hides wiring bugs.
+---
+
+## 2026-04-24 - US-011
+- Added Ctrl+Z (⌘+Z) single-level undo for reassign / type change / geometry edit corrections. Delete is recorded as a non-undoable slot with a tooltip reason.
+- Files changed:
+  - components/review/Inspector.tsx (extended onReassignSuccess / onTypeChangeSuccess signatures to carry prior snapshot; both control callbacks emit { featureId, priorHoleId|priorType })
+  - components/review/ReviewWorkspace.tsx (LastCorrection discriminated union + state, captures prior values on every correction success, applyUndo dispatches inverse PATCH directly, Ctrl+Z keyboard handler, Undo button in map top-right controls, inline undo error banner)
+  - prd.json (US-011 passes=true + notes)
+  - progress.txt (this entry + 2 Codebase Patterns)
+- Flow:
+  1. Reassign Apply → PATCH /hole succeeds → onReassignSuccess({featureId, newHoleId, priorHoleId}) → setLastCorrection({kind:'reassign', undoable:true, featureId, priorHoleId, priorHoleNumber}).
+  2. Change type Apply → PATCH /type succeeds → onTypeChangeSuccess({featureId, priorType}) → setLastCorrection({kind:'type', undoable:true, featureId, priorType}).
+  3. Draw Apply → PATCH /geometry succeeds → onDrawSaved reads `selectedFeatureGeometry` (still the pre-save geometry because refreshGeoJSON hasn't landed the new one yet) → setLastCorrection({kind:'geometry', undoable:true, featureId, priorGeometry: MultiPolygon}).
+  4. Delete Confirm → onDeleteSuccess → setLastCorrection({kind:'delete', undoable:false, reason:'Deleted polygons cannot be restored from the reviewer UI'}).
+  5. Ctrl+Z fires keyboard handler → guards skip if drawModeActive / deleteDialogFeature / !lastCorrection / !undoable → applyUndo() dispatches the inverse PATCH (hole=priorHoleId, type=priorType, geometry=priorGeometry) directly from ReviewWorkspace. On 2xx: clear slot, bump holeFeaturesVersion, refreshGeoJSON. For reassign specifically, restore selectedHoleId to priorHoleId so the polygon is visible in the Inspector again.
+  6. Undo button in map controls: enabled when lastCorrection.undoable=true, disabled with reason as title for delete, shows 'Undoing…' while in-flight. role=alert banner at top-center for non-2xx.
+- **Learnings for future iterations:**
+  - Keep the undo dispatch OUT of the child component's success path. If undo re-entered Inspector's Apply button, its success callback would fire again and register the undo as the new lastCorrection — undo-of-undo breaks the "single level" AC. Apply the inverse PATCH directly from the workspace and clear the slot explicitly.
+  - Prior geometry for `draw` undo is free: `selectedFeatureGeometry` is still the old geometry at onDrawSaved time because refreshGeoJSON hasn't landed yet. No need to snapshot it before calling DrawMode. Just read the memo.
+  - For reassign undo, don't just flip the hole — also reset selectedHoleId to the prior hole. Otherwise the polygon appears to vanish because the Inspector is focused on the NEW hole whose feature list no longer contains it after the undo lands.
+  - Ctrl/Cmd+Z key detection needs the guard `!e.shiftKey && !e.altKey` — otherwise Ctrl+Shift+Z (redo, not implemented) would also trigger undo.
+  - For corrections with no way to invert (polygon_delete without a feature-insert endpoint), record a `{undoable:false, reason}` slot rather than null. Null hides the button entirely; a disabled slot shows the user WHY undo isn't available.
 ---
 
 ## 2026-04-24 - US-005
