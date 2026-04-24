@@ -71,11 +71,24 @@ jobs:
       - name: Smoke test /api/health
         run: |
           URL="${{ steps.deploy.outputs.url }}"
+          ok=""
           for i in 1 2 3 4 5; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health" || echo "000")
             echo "health probe $i: $code"
-            if [ "$code" = "200" ]; then exit 0; fi
+            if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 5
           done
-          echo "Health check failed after 5 attempts"
-          exit 1
+          if [ -z "$ok" ]; then
+            echo "Health check failed after 5 attempts"
+            exit 1
+          fi
+
+      - name: Smoke test /dashboard/courses unauth redirect
+        run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/dashboard/courses" || echo "000")
+          echo "dashboard unauth probe: $code"
+          if [ "$code" != "307" ] && [ "$code" != "302" ]; then
+            echo "Expected 307 or 302 redirect to /login, got $code"
+            exit 1
+          fi

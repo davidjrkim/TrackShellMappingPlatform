@@ -460,3 +460,19 @@
   - Mocking @sentry/nextjs in a test: `jest.mock('@sentry/nextjs', () => ({ captureException: jest.fn(), init: jest.fn() }))` is enough — the route handler only calls captureException, and Sentry's init is invoked at module-load time via the config files which the test doesn't import.
   - Client config should read `NEXT_PUBLIC_SENTRY_DSN || SENTRY_DSN` — the browser bundle can't see server-only env vars, so if the deployment uses a single SENTRY_DSN for both environments it needs the NEXT_PUBLIC_ prefix to reach the client. Falling back to SENTRY_DSN keeps dev ergonomics simple.
 ---
+
+## 2026-04-24 - US-022
+- Added post-deploy smoke check for /dashboard/courses unauth redirect and tightened the existing /api/health probe so the workflow fails if either smoke step fails.
+- Files changed:
+  - .github/workflows/deploy.yml (added 'Smoke test /dashboard/courses unauth redirect' step; modified /api/health step to break out of the retry loop instead of exit 0 so subsequent smoke steps run)
+  - prd.json (US-022 passes=true + notes)
+- Flow:
+  1. After 'Deploy to Vercel' captures the deployment URL via steps.deploy.outputs.url
+  2. /api/health is probed up to 5 times with 5s backoff; first 200 marks success, otherwise exit 1 at the end
+  3. /dashboard/courses is curled once with `-o /dev/null -w '%{http_code}'`; must be 307 (next-auth withAuth default) or 302, otherwise exit 1
+- **Learnings for future iterations:**
+  - Multi-step smoke checks in CI: if one probe step has an internal `exit 0` on success, any later probe steps are skipped because the first step never fell through — capture a success flag in a variable and only `exit 1` at the end of the retry loop, then let control flow continue to the next step.
+  - next-auth's withAuth middleware returns 307 (temporary redirect) on unauthenticated dashboard requests in Next.js 14. Allow both 307 and 302 in the assertion for resilience against minor behavior changes.
+  - Prefer `steps.deploy.outputs.url` over a STAGING_URL env var for post-deploy smoke tests — it targets the freshly deployed URL for both prod and preview, and doesn't need a separate secret.
+  - Workflow YAML typecheck isn't part of `tsc --noEmit`; GitHub's Actions YAML lints only at push time. Keep the step names unique so the logs are greppable.
+---

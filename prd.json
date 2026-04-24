@@ -342,8 +342,8 @@
         "Typecheck passes"
       ],
       "priority": 22,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Extended .github/workflows/deploy.yml with two post-deploy smoke checks. Existing /api/health probe was tightened to capture pass/fail and fall through to the next step (previously exit 0 on success, which short-circuited any later smoke steps). Added a second step 'Smoke test /dashboard/courses unauth redirect' that curls the dashboard path unauthenticated and requires a 307 or 302 (next-auth middleware in middleware.ts redirects unauthenticated /dashboard/:path* to /login). Both smoke steps `exit 1` on failure so the workflow fails. Smoke probes target the freshly deployed URL captured in steps.deploy.outputs.url — not a STAGING_URL env var — which is more robust than a hard-coded hostname and applies equally to prod and preview deploys."
     },
     {
       "id": "US-023",
