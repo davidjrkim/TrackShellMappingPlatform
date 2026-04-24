@@ -41,6 +41,8 @@
 - To compute derived next-selection state from a just-updated list while avoiding nested setters, refactor `setHoles(prev => prev.map(...))` to `const updated = holes.map(...); setHoles(updated); if (nextFrom(updated)) setSelectedHoleId(...)`. React is fine with two independent setStates in the same callback; batching handles the re-render. Keep the `holes` dep in useCallback so the mapping reads the latest snapshot.
 - Transaction-integrity test pattern (US-016): to prove a route handler's `db.$transaction([a, b])` is atomic without mocking Prisma entirely, capture `const realTransaction = db.$transaction.bind(db)` at module scope, then per-test `jest.spyOn(db, '$transaction').mockImplementationOnce(arg => realTransaction([arg[0], db.$executeRaw\`SELECT 1/0\`]))`. The real $transaction still runs the modified array in one Postgres tx, so the forced division-by-zero rolls back the sibling statement. Verifies atomicity from outside the route — no need to reach into Prisma internals. Reset mocks with `jest.restoreAllMocks()` in afterEach so one test's stub doesn't bleed into the next.
 - Seeding a feature row for tests requires raw SQL because Prisma cannot write PostGIS geometry: `INSERT INTO features (id, hole_id, course_id, feature_type, geometry) VALUES (gen_random_uuid(), $hole::uuid, $course::uuid, 'green'::feature_type_enum, ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) RETURNING id`. Use a polygon larger than 20 m² (the floor PATCH /geometry enforces) — e.g. 0.001° × 0.001° at latitude 37° ≈ 9,900 m².
+- Reject-path test seeds (US-017): a self-intersecting bowtie MultiPolygon `[[[a,b],[c,d],[c,b],[a,d],[a,b]]]` parses via ST_GeomFromGeoJSON but ST_IsValid returns false — use this to drive the 422 invalid-geometry path without the body-shape 400 kicking in first. For the area-floor test, a ~1e-5° × 1e-5° MultiPolygon at latitude 37° is ≈ 1.2 m², comfortably under the 20 m² floor.
+- Lock-conflict tests need two users in the same org; seed both in beforeAll, hold the lock by direct UPDATE (`SET locked_by = $userA, locked_at = NOW()`) and mock the session as userB. The 2-hour TTL guard in lib/corrections.ts means tests that want the lock to be "held" must use a recent NOW(); tests that want auto-release must use NOW() - INTERVAL '3 hours'.
 ---
 
 ## 2026-04-24 - US-003
@@ -345,4 +347,25 @@
   - The Inspector "Confirm Hole (Week 6)" button is still rendered disabled — out of scope for US-013 but a natural follow-up alongside US-014 (sign-off screen). Not touched here to keep the diff focused on the keyboard-shortcut AC.
   - The pre-existing `tests/api/jobs.test.ts` failure (Cannot find module '@/lib/pipeline') predates this branch — it has been failing since Weeks 2-4 and is unrelated to correction-flow work. All other 30 tests pass.
   - Manual browser verification of the Enter shortcut is still required — no dev-browser tool in this environment.
+---
+
+
+## 2026-04-24 - US-017
+- Added reject-path tests covering lock 409, geometry 422 (invalid + area < 20 m²), and sign-off 400 (unchanged course status).
+- Files changed:
+  - tests/api/corrections-reject-paths.test.ts (new — 4 tests)
+  - prd.json (US-017 passes=true + notes)
+  - progress.txt (this entry + 2 Codebase Patterns)
+- Coverage:
+  1. Lock 409: userA holds the lock via direct UPDATE; session = userB; PATCH /api/features/[featureId]/hole → 409; assert feature.hole_id unchanged and zero 'hole_reassignment' corrections rows.
+  2. PATCH /geometry 422 invalid: bowtie MultiPolygon — ST_GeomFromGeoJSON parses it, ST_IsValid returns false; assert 422 and no 'geometry_edit' corrections.
+  3. PATCH /geometry 422 area floor: ~1.1m × 1.1m polygon at latitude 37° ≈ 1.2 m²; assert 422 and no 'geometry_edit' corrections.
+  4. POST /review/complete 400: hole 1 flagged (needs_review=true, confirmed=false), session = reviewer; body.blocking_holes includes 1; courses.status still 'unmapped'; no 'course_signoff' corrections written.
+- Approach notes:
+  - Reused the seed pattern from corrections-transactions.test.ts (org + 2 reviewer users + course + 2 holes in beforeAll; reset lock/status/holes and re-insert feature in beforeEach). Two users are required here because the lock test must flip between holder and attacker.
+  - beforeEach resets `courses.status` back to 'unmapped' in addition to lock state because the /review/complete test would otherwise see a dirty state if reordered.
+- **Learnings for future iterations:**
+  - When a test wants to assert "reject-path didn't leak writes", count the corrections rows by correction_type rather than just the feature state — a route that somehow inserted the audit row but failed the mutation still needs to be caught.
+  - For lock-conflict tests, mock the session via the next-auth mock as userB AFTER the UPDATE that sets locked_by=userA. Otherwise timing-dependent readers (if any) could see a different lock state during the session hydration.
+  - The pre-existing `tests/api/jobs.test.ts` failure (`Cannot find module '@/lib/pipeline'`) still exists and is unrelated to this work — 8 of 9 test suites pass, 42 tests pass.
 ---

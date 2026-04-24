@@ -271,8 +271,8 @@
         "Tests pass"
       ],
       "priority": 17,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-reject-paths.test.ts — 4 tests covering the key reject paths. (1) Lock 409: userA holds courses.locked_by; session = userB; PATCH /api/features/[featureId]/hole returns 409; assert feature.hole_id unchanged AND zero corrections rows. (2) Geometry 422 (invalid): self-intersecting bowtie MultiPolygon — ST_GeomFromGeoJSON parses it but ST_IsValid returns false; assert 422 + zero corrections rows. (3) Geometry 422 (area): ~1.1m × 1.1m polygon at latitude 37° ≈ 1.2 m², below 20 m² floor; assert 422 + zero corrections rows. (4) Sign-off 400: hole 1 flagged (needs_review=true, confirmed=false); POST /api/courses/[id]/review/complete returns 400; body.blocking_holes contains 1; courses.status still 'unmapped'; zero 'course_signoff' corrections rows written. Reuses the pattern from corrections-transactions.test.ts: next-auth mock + two reviewer users (A/B) in the same org so lock-conflict can be tested; beforeEach resets course lock state, course status back to 'unmapped', holes back to needs_review=false/confirmed=false, and re-inserts the feature with ST_Multi(ST_GeomFromText(...)) because Prisma can't write PostGIS geometry."
     },
     {
       "id": "US-018",
