@@ -1,9 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Map as MapLibreMap } from 'maplibre-gl'
 import HoleList, { type HoleSummary } from './HoleList'
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas'
 import Inspector, { type InspectorFeature } from './Inspector'
+import DrawMode from '@/components/map/DrawMode'
 
 type LockInfo = {
   locked_by: string | null
@@ -63,6 +65,9 @@ export default function ReviewWorkspace({
 
   const [holeFeatures, setHoleFeatures] = useState<InspectorFeature[]>([])
   const [holeFeaturesLoading, setHoleFeaturesLoading] = useState(false)
+
+  const [mapInstance, setMapInstance] = useState<MapLibreMap | null>(null)
+  const [drawModeActive, setDrawModeActive] = useState(false)
 
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
@@ -221,6 +226,31 @@ export default function ReviewWorkspace({
     refreshGeoJSON()
   }, [refreshGeoJSON])
 
+  // Exit draw mode if the selected feature clears. Otherwise DrawMode would
+  // keep editing a feature that is no longer in focus.
+  useEffect(() => {
+    if (!selectedFeatureId && drawModeActive) setDrawModeActive(false)
+  }, [selectedFeatureId, drawModeActive])
+
+  const selectedFeatureGeometry = useMemo<GeoJSON.MultiPolygon | GeoJSON.Polygon | null>(() => {
+    if (!selectedFeatureId || !featureCollection) return null
+    const match = featureCollection.features.find(
+      (f) => (f.properties as { id?: string } | null)?.id === selectedFeatureId,
+    )
+    const geom = match?.geometry
+    if (!geom) return null
+    if (geom.type === 'MultiPolygon' || geom.type === 'Polygon') {
+      return geom as GeoJSON.MultiPolygon | GeoJSON.Polygon
+    }
+    return null
+  }, [featureCollection, selectedFeatureId])
+
+  const onDrawSaved = useCallback(() => {
+    setDrawModeActive(false)
+    setHoleFeaturesVersion((v) => v + 1)
+    refreshGeoJSON()
+  }, [refreshGeoJSON])
+
   // Deselect feature when switching holes
   useEffect(() => {
     setSelectedFeatureId(null)
@@ -285,14 +315,23 @@ export default function ReviewWorkspace({
           break
         }
         case 'Escape': {
+          if (drawModeActive) break
           setSelectedFeatureId(null)
+          break
+        }
+        case 'd':
+        case 'D': {
+          if (selectedFeatureId && selectedFeatureGeometry) {
+            e.preventDefault()
+            setDrawModeActive((v) => !v)
+          }
           break
         }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, selectedHoleId])
+  }, [holes, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -347,7 +386,17 @@ export default function ReviewWorkspace({
           selectedHoleNumber={selectedHole?.hole_number ?? null}
           selectedFeatureId={selectedFeatureId}
           onFeatureClick={onFeatureClick}
+          onMapReady={setMapInstance}
         />
+
+        {drawModeActive && selectedFeatureId && selectedFeatureGeometry && (
+          <DrawMode
+            map={mapInstance}
+            feature={{ id: selectedFeatureId, geometry: selectedFeatureGeometry }}
+            onSaved={onDrawSaved}
+            onCancel={() => setDrawModeActive(false)}
+          />
+        )}
 
         <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
           <button

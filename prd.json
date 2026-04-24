@@ -145,8 +145,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added @mapbox/mapbox-gl-draw@^1.5.1 dep and types/mapbox-gl-draw.d.ts ambient module (upstream ships no .d.ts). components/map/DrawMode.tsx wraps MapboxDraw, seeds it with the selected feature's geometry, and switches to direct_select so vertices drag immediately. MapLibre/Mapbox canvas class mismatch shim: adds 'mapboxgl-canvas' class while Draw is mounted (MapLibre's canvas is 'maplibregl-canvas' and src/events.js#132 checks for the Mapbox class). Draw control buttons are suppressed (displayControlsDefault:false, controls:{}) — UI is an overlay toolbar with Apply/Cancel + inline error. Enter = Apply, Esc = Cancel (no-op while focus in input/textarea). MapCanvas gained onMapReady callback + getMap() on MapCanvasHandle; ReviewWorkspace stores the MapLibre instance in state and passes it to DrawMode. ReviewWorkspace 'D' key toggles drawModeActive when a polygon is selected and its geometry is known; Escape handler no-ops while draw mode is active so a single Escape exits draw mode without also deselecting the feature. On 2xx: setDrawModeActive(false) + refreshGeoJSON + bump holeFeaturesVersion so area_sqm in Inspector reflects the saved shape. On non-2xx: inline role=alert error in the toolbar, working geometry still live in Draw for retry. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-010",

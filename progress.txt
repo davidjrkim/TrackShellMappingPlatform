@@ -21,6 +21,12 @@
 - Prisma + PostGIS interaction: `prisma migrate dev` refuses to run non-interactively and complains about the `bounding_box` PostGIS column it cannot see. Workaround when adding a plain column: create the migration folder under prisma/migrations/<timestamp>_<name>/migration.sql by hand with the ALTER/CREATE TYPE, then `npx prisma migrate deploy` to apply it and record it in _prisma_migrations. Update prisma/schema.prisma alongside so the generated client picks up the new column.
 - Read endpoints that scope by course_id must still org-isolate: do a preflight `SELECT id FROM courses WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL` (404 if empty), then issue the data query. corrections has no org_id column — the course join / preflight is the only barrier.
 - For corrections audit reads, expose geometry snapshots as `{ has_geometry_snapshot: boolean, snapshot_area_sqm: float|null }` via `ST_Area(original_geometry::geography)`. Do NOT ship full MultiPolygon blobs in list payloads — they are large, and the UI only needs presence + size for the audit feed.
+- @mapbox/mapbox-gl-draw works with MapLibre GL v4 if you tag the canvas with the `mapboxgl-canvas` class while Draw is mounted — Draw's pointer-event guard (`src/events.js#132`) checks `classList.contains('mapboxgl-canvas')` and MapLibre's canvas is named `maplibregl-canvas`. Add the class on mount, remove on unmount so we don't leak the Mapbox class after leaving draw mode.
+- @mapbox/mapbox-gl-draw ships no types; keep a minimal ambient module in `types/mapbox-gl-draw.d.ts` covering only the surface we touch (constructor, add, changeMode, DrawUpdateEvent). Don't try to fully re-type the library.
+- When mounting a Draw control onto a MapLibre map, `map.addControl(draw as unknown as maplibregl.IControl)` is the correct cast — Draw's control shape is compatible but the types don't overlap.
+- To get the MapLibre map instance from MapCanvas for sibling components (DrawMode overlay etc.), add a `getMap(): MapLibreMap | null` method to MapCanvasHandle AND expose an `onMapReady(map)` prop that fires from the map `load` event — state-backed is needed because a ref doesn't trigger re-renders.
+- Review UI keyboard handlers: when draw mode is active, short-circuit the default Escape handler that deselects the feature — otherwise a single Esc both exits draw mode and deselects. Add `drawModeActive` as a dep to the keydown effect and guard the Escape branch with `if (drawModeActive) break`.
+- Draw's direct_select mode works per-polygon. When seeding a MultiPolygon, unwrap/rewrap via helpers: accept either Polygon or MultiPolygon back from draw.update and normalise to MultiPolygon before POSTing (PATCH /geometry requires MultiPolygon and lib/spatial.ts ST_Multi wraps any residual Polygon anyway).
 ---
 
 ## 2026-04-24 - US-003
@@ -121,6 +127,31 @@
   - Apply-button rule of thumb: `disabled = submitting || !dirty`. Track `dirty` against the LAST KNOWN server value (the prop), not the initial mount value — `useEffect` on `feature.id` resets local state when the underlying selection changes.
   - When a reassign moves a polygon to a new hole, switching `selectedHoleId` to the new hole keeps the Inspector + map focused on the moved feature; otherwise it'd vanish from the current hole's feature list and the user would think it was lost.
   - No dev-browser/playwright tool available in this environment — Browser AC for US-008 / US-009 / US-010 / etc. needs manual verification on `npm run dev`. Note this in the prd.json `notes` field rather than skipping the AC silently.
+---
+
+## 2026-04-24 - US-009
+- Wired vertex-drag polygon editing into the review workspace via Mapbox GL Draw (running on top of MapLibre GL).
+- Files changed:
+  - package.json + package-lock.json (added @mapbox/mapbox-gl-draw@^1.5.1)
+  - types/mapbox-gl-draw.d.ts (new — minimal ambient typing, upstream ships no .d.ts)
+  - components/map/DrawMode.tsx (new — wraps MapboxDraw, overlays Apply/Cancel toolbar, listens Enter/Esc)
+  - components/review/MapCanvas.tsx (MapCanvasHandle.getMap(); new onMapReady prop that fires after map `load`)
+  - components/review/ReviewWorkspace.tsx (mapInstance state, drawModeActive state, selectedFeatureGeometry memo from featureCollection, D key toggle, Escape guard, renders <DrawMode> overlay, onDrawSaved refreshes GeoJSON + bumps holeFeaturesVersion)
+  - prd.json (US-009 passes=true + notes)
+  - progress.txt (this entry + 6 Codebase Patterns entries)
+- Flow:
+  1. User selects a polygon (click on map or Inspector list).
+  2. User presses D. ReviewWorkspace flips drawModeActive=true when selectedFeatureId + selectedFeatureGeometry are both present.
+  3. DrawMode mounts: tags MapLibre canvas with `mapboxgl-canvas` class (compat shim), creates `new MapboxDraw({ displayControlsDefault:false, controls:{}, keybindings:false })`, `map.addControl(draw)`, `draw.add(selectedFeatureGeometry)`, `draw.changeMode('direct_select', { featureId })` so vertices are immediately draggable.
+  4. Subscribes `map.on('draw.update', ...)` and stores the normalised MultiPolygon in a ref on every vertex drag.
+  5. On Enter (or Apply click): PATCH /api/features/[featureId]/geometry with the working MultiPolygon. 2xx → onSaved → ReviewWorkspace exits draw mode, refreshes GeoJSON and bumps holeFeaturesVersion so Inspector picks up the new area. Non-2xx → inline role=alert error; original geometry stays visible because we never optimistically mutate the feature state.
+  6. On Esc (or Cancel click): onCancel → ReviewWorkspace flips drawModeActive=false. The cleanup effect removes the Draw control, removes the compat canvas class, and leaves the underlying feature geometry untouched.
+- **Learnings for future iterations:**
+  - @mapbox/mapbox-gl-draw v1.5+ is structurally compatible with MapLibre GL v4 — no hard fork needed. The only required shim is the `mapboxgl-canvas` CSS class on the MapLibre canvas element because Draw's pointer-event guard (`src/events.js#132`) checks for it. Apply on mount, remove on unmount.
+  - Upstream ships no TypeScript types — keep a narrow ambient module under `types/` covering just what we use. Don't re-type the whole library; the API surface we need is tiny.
+  - The MapLibre map instance needs to be shared with sibling components (DrawMode lives alongside MapCanvas, not inside). Two parts: (a) add `getMap()` to MapCanvasHandle, (b) fire an `onMapReady(map)` callback from the map load event and store it as STATE in ReviewWorkspace — a ref alone won't re-render DrawMode when the map becomes available.
+  - Don't forget to add `drawModeActive` as a dep of the global keydown effect and guard Escape: otherwise `Esc` both exits draw mode AND deselects the feature in one keystroke. Users expect Esc to step back one level at a time.
+  - mapbox-gl-draw's `direct_select` mode normalises MultiPolygon -> Polygon when only one polygon is present; always wrap back to MultiPolygon before POSTing to PATCH /geometry. lib/spatial.ts's ST_Multi wrap also rescues us server-side but be explicit client-side too.
 ---
 
 ## 2026-04-24 - US-005
