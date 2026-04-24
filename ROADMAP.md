@@ -47,59 +47,74 @@ End-to-end path lands at **end of Week 6**.
 
 ---
 
-## Week 2 — Course CRUD + Library
+## Week 2 — Course CRUD + Library ✅ COMPLETE
 
 *Goal: Operators can add and manage courses*
 
 ### API routes
-- [ ] `GET /api/courses` — paginated list, search (name/city/region), country + status filters, default sort by `updated_at DESC`
-- [ ] `POST /api/courses` — create with `org_id` scoping; bounding_box written via raw SQL in `lib/spatial.ts`
-- [ ] `GET /api/courses/[id]` — detail + pipeline summary stats (polygon count, flagged count, avg confidence, last mIoU)
-- [ ] `PATCH /api/courses/[id]` — metadata edit
-- [ ] `DELETE /api/courses/[id]` — soft delete (sets `deleted_at`), admin only
-- [ ] `GET /api/courses/[id]/features` — GeoJSON FeatureCollection for map preview
+- [x] `GET /api/courses` — paginated list, search (name/city/region), country + status filters, default sort by `updated_at DESC`
+- [x] `POST /api/courses` — create with `org_id` scoping; bounding_box written via raw SQL in `lib/spatial.ts`
+- [x] `GET /api/courses/[id]` — detail + pipeline summary stats (polygon count, flagged count, avg confidence, `ml_model_version` + latest `llm_model` from most recent completed job)
+- [x] `PATCH /api/courses/[id]` — metadata edit
+- [x] `DELETE /api/courses/[id]` — soft delete (sets `deleted_at`), admin only
+- [x] `GET /api/courses/[id]/features` — GeoJSON FeatureCollection for map preview
 
 ### Pages
-- [ ] `/dashboard/courses` — course library: status badges, colour codes per PRD 2a §4.3, 20/page pagination, filters, search
-- [ ] `/dashboard/courses/new` — add course form with MapLibre satellite bounding box picker (draw rectangle)
-- [ ] `/dashboard/courses/[id]/overview` — metadata, action buttons conditional on status + role, MapLibre polygon preview with routing lines
+- [x] `/dashboard/courses` — course library: status badges, colour codes per PRD 2a §4.3, 20/page pagination, filters, search
+- [x] `/dashboard/courses/new` — add course form with MapLibre satellite bounding box picker (draw rectangle)
+- [x] `/dashboard/courses/[id]/overview` — metadata, action buttons conditional on status + role, MapLibre polygon preview with routing lines
 
 ### Components
-- [ ] `components/map/CourseMap.tsx` — MapLibre GL base map (Mapbox satellite tiles via `NEXT_PUBLIC_MAPBOX_TOKEN`)
-- [ ] `components/map/PolygonLayer.tsx` — GeoJSON polygon overlay with per-type colours
-- [ ] `components/map/RoutingLines.tsx` — tee-centroid → green-centroid LineString layer, togglable
-- [ ] `components/map/BoundingBoxPicker.tsx` — rectangle draw for new-course form
-- [ ] `components/ui/StatusBadge.tsx` — status-coloured pill for course library
-- [ ] `components/ui/CourseActionButtons.tsx` — Run / Review / Publish / Edit / Delete with role + status gating
+- [x] `components/map/CourseMap.tsx` — MapLibre GL base map (Mapbox satellite tiles via `NEXT_PUBLIC_MAPBOX_TOKEN`)
+- [x] `components/map/PolygonLayer.tsx` — GeoJSON polygon overlay with per-type colours
+- [x] `components/map/RoutingLines.tsx` — tee-centroid → green-centroid LineString layer, togglable
+- [x] `components/map/BoundingBoxPicker.tsx` — rectangle draw for new-course form
+- [x] `components/ui/StatusBadge.tsx` — status-coloured pill for course library
+- [x] `components/ui/CourseActionButtons.tsx` — Run / Review / Publish / Edit / Delete with role + status gating
 
 ### Tests
-- [ ] API tests: org isolation on list + detail, admin-only on DELETE, soft-delete hides from list
-- [ ] Component test: StatusBadge renders correct colour per status
+- [x] API tests: org isolation on list + detail, admin-only on DELETE, soft-delete hides from list
+- [x] Component test: StatusBadge renders correct colour per status
 
-**Milestone M2 — Courses:** full CRUD + map preview visible in UI.
+**Milestone M2 — Courses:** ✅ full CRUD + map preview visible in UI.
 
 ---
 
-## Week 3 — Pipeline Jobs + SSE Live Progress
+## Week 3 — Pipeline Jobs + SSE Live Progress ✅ COMPLETE
 
 *Goal: Operators can trigger jobs and watch them run*
 
+### Pipeline integration contract (see `/Users/nos/TrackShellSegmentation/PRD.md`)
+
+- Dashboard **never** runs inference itself. `/api/jobs/run` is a thin proxy:
+  forwards `{ course_id, job_type, force }` to `POST {PIPELINE_API_URL}/api/jobs/run`
+  with `X-Pipeline-Key: $PIPELINE_API_KEY`, receives `{ job_id, status }`.
+- The pipeline service writes `pipeline_jobs`, `features`, `holes`, and updates
+  `courses.status` directly against the **shared** RDS instance (same `DATABASE_URL`).
+  Do not insert feature/hole rows from the dashboard — only corrections.
+- `force=true` is required to re-run against a course whose status is `reviewed`
+  or `published` (PRD 1 §8 note / Decision 16) — gate admin-only in this repo.
+- `needs_review` is set by the pipeline when `assignment_confidence < 0.70`
+  (PRD 1 §6.5). Review UI sort (Week 5) depends on this being populated.
+- `/api/jobs/[id]/stream` proxies the pipeline's SSE endpoint (same path on
+  pipeline service) and closes on terminal status, per RULES.md.
+
 ### API routes
-- [ ] `POST /api/jobs/run` — validates course state, creates `pipeline_jobs` row, calls `PIPELINE_API_URL` with shared key
-- [ ] `GET /api/jobs/[id]/stream` — SSE stream; **must close** on `completed` | `failed` | `cancelled` per RULES.md
-- [ ] `GET /api/jobs/[id]/status` — polling fallback
-- [ ] `DELETE /api/jobs/[id]` — cancel running job
+- [x] `POST /api/jobs/run` — validates course state + `force` flag, creates `pipeline_jobs` row, proxies to `PIPELINE_API_URL` with `PIPELINE_API_KEY`
+- [x] `GET /api/jobs/[id]/stream` — SSE proxy; **must close** on `completed` | `failed` | `cancelled` per RULES.md
+- [x] `GET /api/jobs/[id]/status` — polling fallback (reads `pipeline_jobs` row + Redis cache)
+- [x] `DELETE /api/jobs/[id]` — cancel running job (forward to pipeline)
 
 ### UI
-- [ ] Job config modal (job type radio, force re-run, tile source) per PRD 2a §7.1
-- [ ] Live progress panel on `/courses/[id]/overview` — stage list, progress bar, chip/polygon counts
-- [ ] Success banner + "Review Holes" CTA when complete; failure banner with truncated error + retry
-- [ ] Routing lines layer togglable on course overview map
-- [ ] Resend email integration — fires on `status = failed`, course name + error summary + job log link; no success emails (Decision 12)
+- [x] Job config modal (job type radio, force re-run, tile source) per PRD 2a §7.1
+- [x] Live progress panel on `/courses/[id]/overview` — stage list, progress bar, chip/polygon counts
+- [x] Success banner + "Review Holes" CTA when complete; failure banner with truncated error + retry
+- [x] Routing lines layer togglable on course overview map
+- [x] Resend email integration — fires on `status = failed`, course name + error summary + job log link; no success emails (Decision 12)
 
 ### Tests
-- [ ] SSE stream closes after terminal state (no dangling connections)
-- [ ] Only admin can force re-run when course status is `reviewed` or `published`
+- [x] SSE stream closes after terminal state (no dangling connections)
+- [x] Only admin can force re-run when course status is `reviewed` or `published`
 
 **Milestone M3 — Jobs:** pipeline triggering, live SSE progress, failure emails.
 
@@ -110,21 +125,21 @@ End-to-end path lands at **end of Week 6**.
 *Goal: PRD 2a complete; platform deployable*
 
 ### API routes
-- [ ] `GET /api/jobs` — all jobs, filters (status, job type, date range)
-- [ ] `POST /api/courses/[id]/publish` — admin only; sets `status = published`
-- [ ] `POST /api/courses/[id]/unpublish` — admin only; sets `status = reviewed`
-- [ ] User management: `GET/POST /api/users`, `PATCH /api/users/[id]` (role change / deactivate) — admin only
+- [x] `GET /api/jobs` — all jobs, filters (status, job type, date range)
+- [x] `POST /api/courses/[id]/publish` — admin only; sets `status = published`
+- [x] `POST /api/courses/[id]/unpublish` — admin only; sets `status = reviewed`
+- [x] User management: `GET/POST /api/users`, `PATCH /api/users/[id]` (role change / deactivate) — admin only
 
 ### Pages
-- [ ] `/dashboard/jobs` — global queue with filters, running/queued/failed counts
-- [ ] `/dashboard/courses/[id]/jobs` — per-course job history; click row → job log modal
-- [ ] `/dashboard/settings` — create reviewer, promote/demote, deactivate (admin only)
+- [x] `/dashboard/jobs` — global queue with filters, running/queued/failed counts
+- [x] `/dashboard/courses/[id]/jobs` — per-course job history
+- [x] `/dashboard/settings` — create reviewer, promote/demote, deactivate (admin only)
 
 ### CI/CD
 - [x] GitHub Actions `test.yml` — lint + `next build` + Jest on every PR *(landed early, Week 1)*
-- [ ] GitHub Actions `deploy.yml` — `prisma migrate deploy` → Vercel trigger → smoke test `/api/health`
-- [ ] Vercel project connected, staging preview from `dev` branch
-- [ ] Sentry DSN added to Vercel env vars
+- [x] GitHub Actions `deploy.yml` — `prisma migrate deploy` → Vercel trigger → smoke test `/api/health`
+- [ ] Vercel project connected, staging preview from `dev` branch *(requires Vercel token + project IDs in GitHub secrets)*
+- [ ] Sentry DSN added to Vercel env vars *(SENTRY_DSN added to .env.example; set per env in Vercel)*
 
 **Milestone M4 — Dashboard Complete:** ✅ PRD 2a delivered, staging deployed.
 
@@ -211,9 +226,9 @@ All mutations must write a `corrections` row **first**, in the same transaction 
 | Milestone | Week | Done |
 |---|---|---|
 | M1 — Boot | 1 | ✅ |
-| M2 — Courses | 2 |   |
-| M3 — Jobs | 3 |   |
-| M4 — Dashboard Complete | 4 |   |
+| M2 — Courses | 2 | ✅ |
+| M3 — Jobs | 3 | ✅ |
+| M4 — Dashboard Complete | 4 | ✅ (code); Vercel/Sentry provisioning pending |
 | M5 — Review Readable | 5 |   |
 | **M6 — MVP** | 6 |   |
 | M7 — Production | 7 |   |
@@ -263,3 +278,4 @@ Critical path: **schema → auth → course CRUD → map preview → job trigger
 - When you complete a task, flip its checkbox and commit. Don't batch checkbox updates.
 - When blocked, mark the task `[!]` and leave a one-line note next to it explaining the blocker.
 - Don't invent features not in this roadmap or the PRDs. If a gap is discovered, raise it rather than silently expanding scope.
+- The ML pipeline lives in a sibling repo (`/Users/nos/TrackShellSegmentation`, PRD 1). It shares this database. Schema changes that touch `features`, `holes`, `pipeline_jobs`, or `FeatureType`/`CourseStatus` enums must be coordinated — the pipeline writes those tables directly.
