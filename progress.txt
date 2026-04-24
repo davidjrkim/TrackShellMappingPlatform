@@ -45,6 +45,8 @@
 - Lock-conflict tests need two users in the same org; seed both in beforeAll, hold the lock by direct UPDATE (`SET locked_by = $userA, locked_at = NOW()`) and mock the session as userB. The 2-hour TTL guard in lib/corrections.ts means tests that want the lock to be "held" must use a recent NOW(); tests that want auto-release must use NOW() - INTERVAL '3 hours'.
 - Hard-delete audit assertions (US-018): after the feature row is gone, the corrections row carries feature_id=NULL (ON DELETE SET NULL) — look it up by `course_id + correction_type='polygon_delete'` instead of by feature_id. The polygon_delete route snapshots confidence_score into `notes` as JSON where the numeric value is emitted as a JSON number, not a string — assert via `Number(JSON.parse(notes).confidence_score)` / toBeCloseTo rather than matching a string. Geometry snapshot is best verified via `ST_Area(original_geometry::geography)` rather than round-tripping GeoJSON — faster and more readable.
 - Org-isolation tests (US-019): every correction endpoint returns 404 (not 403) when the caller's org doesn't match the resource. The helpers (getFeatureForMutation / getHoleForMutation / getLock / GET /corrections preflight) all join through `courses.org_id` and return null on mismatch — routes treat null as "not found" and never distinguish "exists elsewhere" from "doesn't exist". When asserting cross-org rejection, always pair the 404 assertion with a "no side-effect" assertion (feature/hole/course row unchanged + zero new corrections rows for the target course_id) so a leaky endpoint that 404s AFTER writing would still fail the test.
+- Jsdom component tests that mock `fetch`: jsdom does NOT expose a global `Response` constructor, so `new Response(JSON.stringify(...), { status })` throws ReferenceError. Use a plain `FakeResponse` helper returning `{ ok: status>=200&&<300, status, json: async () => body }` — the Inspector correction controls only call `.ok`, `.status`, and `.json()` on the result, so the shim is sufficient. Stash `const originalFetch = global.fetch` at module scope and restore in `afterEach` so one test's mock doesn't leak.
+- Inspector correction controls (ReassignHoleControl/ChangeTypeControl) can be driven via fireEvent.change on the select + fireEvent.click on Apply; wrap the click in `await act(async () => { ... })` so the async setState after the fetch resolves settles before assertions. Error path: staged select value is preserved on non-2xx so the user can Retry without re-picking — assert this explicitly in the test.
 ---
 
 ## 2026-04-24 - US-003
@@ -410,4 +412,26 @@
   - Pair every 404 assertion with a "no side-effect" assertion. A bug that 404s AFTER landing a write would still be a security hole; the no-corrections-rows + no-row-mutation checks catch that.
   - GET endpoints need a body-level assertion in addition to the status code — a buggy implementation that 404s via a thrown error but sent a partial body via a prior `res.write` would still leak; asserting `body.corrections === undefined` catches it.
   - The jobs.test.ts failure (Cannot find module '@/lib/pipeline') still present — unrelated to this story.
+---
+
+## 2026-04-24 - US-020
+- Added component tests for HoleList, Inspector, and CorrectionActions (the Inspector correction sub-controls).
+- Files changed:
+  - tests/components/HoleList.test.tsx (extended with 4 render tests)
+  - tests/components/Inspector.test.tsx (new — 6 tests)
+  - tests/components/CorrectionActions.test.tsx (new — 6 tests)
+  - prd.json (US-020 passes=true)
+  - progress.txt (this entry + 2 Codebase Pattern additions)
+- Coverage:
+  1. HoleList render: listbox renders rows in review order (flagged ASC confidence → others ASC hole number); progress counter header '2 / 5 confirmed' + footer 'Progress: 2 / 5 ✓'; data-flagged/data-confirmed attrs correct per row; aria-selected tracks selectedHoleId.
+  2. Inspector view switching: placeholder when hole is null, hole view when hole selected + no feature selected, polygon view when selectedFeatureId is set (reassign-hole-select + change-type-select + delete-polygon-open all visible).
+  3. Inspector dropdown population: reassign-hole-select lists 'Hole 1', 'Hole 2', 'Hole 3' in order and defaults to the feature's current hole id; change-type-select lists the 5 FeatureType options (green, fairway, tee_box, bunker, water_hazard) and defaults to the feature's current type.
+  4. CorrectionActions (Reassign + ChangeType): Apply disabled until select value differs from current; Cancel reverts the select and re-disables Apply; non-2xx surfaces inline role=alert with body.error message and onSuccess is NOT called; 2xx fires onSuccess with {featureId, newHoleId, priorHoleId} / {featureId, priorType}.
+- **Learnings for future iterations:**
+  - jsdom has no global Response constructor — `new Response(body, init)` throws ReferenceError inside component tests. Use a plain FakeResponse shim { ok, status, json(): Promise<unknown> }. Only those three are touched by the Inspector correction fetch code path.
+  - Stash `const originalFetch = global.fetch` at module scope and restore in `afterEach` — prevents one test's mock from leaking into the next. Do NOT use jest.restoreAllMocks for fetch (jest.fn assigned to global doesn't get tracked by restoreAllMocks unless via jest.spyOn, which doesn't work on cross-realm globals cleanly here).
+  - Wrap the Apply click in `await act(async () => { fireEvent.click(...) })` so the async state update after the fetch resolves settles before assertions. Without act, the "error visible" assertion races the render.
+  - Inspector's correction controls preserve the staged select value after a non-2xx response so the user can Retry without re-picking — assert this explicitly in the error-path test; regressing to reset-on-error would be an AC violation under US-012.
+  - FEATURE_TYPE_OPTIONS in Inspector.tsx is the source of truth for the dropdown — the test asserts the exact array order. If the list grows, update FEATURE_LABEL and FEATURE_SWATCH in the same file AND this test's expectation.
+  - `npx tsc --noEmit` is the project's typecheck command — no explicit `typecheck` script in package.json. Run it after editing tests to catch ambient-types drift early.
 ---

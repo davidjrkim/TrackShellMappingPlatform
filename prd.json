@@ -313,8 +313,8 @@
         "Tests pass"
       ],
       "priority": 20,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Extended tests/components/HoleList.test.tsx with 4 render tests on top of the existing orderHolesForReview pure logic coverage: listbox renders rows in review order (flagged ASC confidence first, then by hole number), progress counter renders '2 / 5 confirmed' in header and 'Progress: 2 / 5 ✓' in footer, data-flagged/data-confirmed attrs set correctly per row, aria-selected tracks selectedHoleId. New tests/components/Inspector.test.tsx — 6 tests across two describe blocks: view switching (no-hole placeholder, hole view when hole selected, polygon view when feature selected) and dropdown population (reassign-hole lists all holes ASC and defaults to the feature's current hole; change-type lists the 5 FeatureType options in enum order and defaults to the feature's current type). New tests/components/CorrectionActions.test.tsx — 6 tests covering the Inspector sub-controls ReassignHoleControl + ChangeTypeControl: Apply disabled until dirty, Cancel reverts local selection + re-disables Apply, non-2xx surfaces inline role=alert error without firing onSuccess (staged value preserved for Retry), 2xx fires onSuccess with correct payload including priorHoleId/priorType. fetch is mocked via a FakeResponse helper because jsdom has no global Response constructor — an async fn returning { ok, status, json() } is enough for the control's code path. All 28 component tests pass; typecheck clean."
     },
     {
       "id": "US-021",
