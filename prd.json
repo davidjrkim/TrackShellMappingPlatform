@@ -49,8 +49,8 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/geometry/route.ts. Body must be { geometry: GeoJSON MultiPolygon } (400 otherwise). Reuses lib/spatial.ts isGeometryValid() for ST_IsValid + ST_Area(::geography) — 422 on invalid or area < 20 m². Atomic $transaction: INSERT corrections ('geometry_edit') snapshotting f.geometry via INSERT...SELECT, then UPDATE features.geometry = ST_Multi(ST_GeomFromGeoJSON(...))."
     },
     {
       "id": "US-004",

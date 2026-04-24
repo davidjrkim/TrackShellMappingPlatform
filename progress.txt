@@ -1,0 +1,31 @@
+## Codebase Patterns
+- Correction endpoints share a preflight flow: authenticate → UUID-validate featureId → parse+validate body → getFeatureForMutation (org isolation) → isLockedByOther (409) → body-specific 422s → $transaction([INSERT corrections, UPDATE features]).
+- Every correction mutation MUST run as a Prisma $transaction with the corrections INSERT first and the feature mutation second, so a half-applied correction cannot ship.
+- corrections.original_geometry and features.geometry are both GEOMETRY(MultiPolygon,4326). Snapshot the prior geometry with INSERT ... SELECT f.geometry FROM features (no ST_AsGeoJSON round-trip needed).
+- Enums need explicit ::feature_type_enum casts in raw SQL when passed as string bind parameters.
+- lib/spatial.ts isGeometryValid(geojson) returns { valid, areaSqm } from ST_IsValid + ST_Area(::geography) in one query — reuse it rather than writing new raw SQL in route handlers.
+- Use ST_Multi(ST_GeomFromGeoJSON(...)) when writing to a MultiPolygon column to tolerate single-Polygon GeoJSON without failing the type constraint.
+- lib/corrections.ts exposes getFeatureForMutation / getHoleRef / isLockedByOther — always use these, do not re-query in routes.
+- UUID regex used for all featureId / holeId params: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.
+---
+
+## 2026-04-24 - US-003
+- Implemented PATCH /api/features/[featureId]/geometry to save edited polygon geometry with an atomic corrections audit.
+- Files changed:
+  - app/api/features/[featureId]/geometry/route.ts (new)
+  - prd.json (US-003 passes=true + notes)
+- Flow:
+  1. Session required (401 otherwise) + UUID-validate featureId (404).
+  2. Body must be `{ geometry: { type: 'MultiPolygon', coordinates: [...] } }` — 400 otherwise.
+  3. Load feature via getFeatureForMutation (org-isolated).
+  4. isLockedByOther → 409.
+  5. Call isGeometryValid(geojson) — 422 if !valid or areaSqm < 20.
+  6. `$transaction([INSERT corrections (correction_type='geometry_edit', original_geometry=f.geometry), UPDATE features SET geometry = ST_Multi(ST_GeomFromGeoJSON(...))])` — corrections row written before the feature mutation.
+  7. Return updated feature shape matching US-001/US-002.
+- **Learnings for future iterations:**
+  - `corrections.original_geometry` is typed `GEOMETRY(MultiPolygon,4326)` — can snapshot via `INSERT ... SELECT f.geometry FROM features`, no GeoJSON conversion required.
+  - Wrap incoming GeoJSON with `ST_Multi(ST_GeomFromGeoJSON(...))` when updating features.geometry — protects against single-Polygon input while respecting the MULTIPOLYGON schema constraint.
+  - `lib/spatial.ts` already has `isGeometryValid(geojson)` doing exactly the ST_IsValid + ST_Area(::geography) pair required by the PRD — do not duplicate.
+  - Prisma `$transaction` with an array of `$executeRaw` statements guarantees atomic rollback across raw SQL — no need for interactive transaction callback for two-statement correction flows.
+  - Area threshold is 20 m² (below which we reject as likely editing noise / drag slips).
+---
