@@ -148,8 +148,9 @@ export default function ReviewWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId])
 
-  // Initial GeoJSON fetch
-  useEffect(() => {
+  // GeoJSON loader — used both on mount and after a successful correction so
+  // the map reflects the new hole assignment / type immediately.
+  const refreshGeoJSON = useCallback(() => {
     let cancelled = false
     fetch(`/api/courses/${courseId}/features/geojson`)
       .then((r) => {
@@ -169,7 +170,14 @@ export default function ReviewWorkspace({
     }
   }, [courseId])
 
-  // Load selected hole detail
+  useEffect(() => {
+    return refreshGeoJSON()
+  }, [refreshGeoJSON])
+
+  // Load selected hole detail. holeFeaturesVersion is bumped after a successful
+  // correction to force a refetch (so feature_type / hole_number reflect the
+  // newly written state without an optimistic update).
+  const [holeFeaturesVersion, setHoleFeaturesVersion] = useState(0)
   useEffect(() => {
     if (!selectedHoleId) {
       setHoleFeatures([])
@@ -195,7 +203,23 @@ export default function ReviewWorkspace({
     return () => {
       cancelled = true
     }
-  }, [courseId, selectedHoleId])
+  }, [courseId, selectedHoleId, holeFeaturesVersion])
+
+  const onReassignSuccess = useCallback(
+    (newHoleId: string) => {
+      // Polygon now belongs to a different hole — switch to it so the
+      // Inspector and map both stay focused on the moved feature.
+      setSelectedHoleId(newHoleId)
+      setSelectedFeatureId(null)
+      refreshGeoJSON()
+    },
+    [refreshGeoJSON],
+  )
+
+  const onTypeChangeSuccess = useCallback(() => {
+    setHoleFeaturesVersion((v) => v + 1)
+    refreshGeoJSON()
+  }, [refreshGeoJSON])
 
   // Deselect feature when switching holes
   useEffect(() => {
@@ -358,8 +382,11 @@ export default function ReviewWorkspace({
         hole={selectedHole}
         features={holeFeatures}
         topology={selectedTopology}
+        holes={holes}
         selectedFeatureId={selectedFeatureId}
         onSelectFeature={(id) => setSelectedFeatureId(id)}
+        onReassignSuccess={onReassignSuccess}
+        onTypeChangeSuccess={onTypeChangeSuccess}
         loading={holeFeaturesLoading}
       />
     </div>

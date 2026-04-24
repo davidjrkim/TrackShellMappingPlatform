@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import type { HoleSummary } from './HoleList'
 
 export type InspectorFeature = {
@@ -11,6 +12,14 @@ export type InspectorFeature = {
   reviewed: boolean
 }
 
+const FEATURE_TYPE_OPTIONS = [
+  'green',
+  'fairway',
+  'tee_box',
+  'bunker',
+  'water_hazard',
+] as const
+
 type Props = {
   hole: HoleSummary | null
   features: InspectorFeature[]
@@ -20,8 +29,11 @@ type Props = {
     has_fairway: boolean
     has_bunker: boolean
   } | null
+  holes: HoleSummary[]
   selectedFeatureId: string | null
   onSelectFeature: (featureId: string | null) => void
+  onReassignSuccess: (newHoleId: string) => void
+  onTypeChangeSuccess: () => void
   loading?: boolean
 }
 
@@ -56,8 +68,11 @@ export default function Inspector({
   hole,
   features,
   topology,
+  holes,
   selectedFeatureId,
   onSelectFeature,
+  onReassignSuccess,
+  onTypeChangeSuccess,
   loading = false,
 }: Props) {
   const selectedFeature = selectedFeatureId
@@ -76,7 +91,10 @@ export default function Inspector({
       ) : selectedFeature ? (
         <FeatureView
           feature={selectedFeature}
+          holes={holes}
           onBack={() => onSelectFeature(null)}
+          onReassignSuccess={onReassignSuccess}
+          onTypeChangeSuccess={onTypeChangeSuccess}
         />
       ) : (
         <HoleView hole={hole} features={features} topology={topology} loading={loading} onSelectFeature={onSelectFeature} />
@@ -230,10 +248,16 @@ function TopologyRow({
 
 function FeatureView({
   feature,
+  holes,
   onBack,
+  onReassignSuccess,
+  onTypeChangeSuccess,
 }: {
   feature: InspectorFeature
+  holes: HoleSummary[]
   onBack: () => void
+  onReassignSuccess: (newHoleId: string) => void
+  onTypeChangeSuccess: () => void
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -255,11 +279,232 @@ function FeatureView({
         <Row label="Area" value={formatArea(feature.area_sqm)} />
         <Row label="Confidence" value={formatConfidence(feature.confidence_score)} />
         <Row label="Reviewed" value={feature.reviewed ? 'Yes' : 'No'} />
-      </div>
 
-      <footer className="px-4 py-3 border-t border-gray-200 bg-gray-50">
-        <p className="text-xs text-gray-500">Edit actions land in Week 6.</p>
-      </footer>
+        <ReassignHoleControl
+          feature={feature}
+          holes={holes}
+          onSuccess={onReassignSuccess}
+        />
+
+        <ChangeTypeControl
+          feature={feature}
+          onSuccess={onTypeChangeSuccess}
+        />
+      </div>
+    </div>
+  )
+}
+
+function ReassignHoleControl({
+  feature,
+  holes,
+  onSuccess,
+}: {
+  feature: InspectorFeature
+  holes: HoleSummary[]
+  onSuccess: (newHoleId: string) => void
+}) {
+  const orderedHoles = [...holes].sort((a, b) => a.hole_number - b.hole_number)
+  const currentHole = orderedHoles.find((h) => h.hole_number === feature.hole_number)
+  const currentHoleId = currentHole?.id ?? ''
+
+  const [selectedHoleId, setSelectedHoleId] = useState<string>(currentHoleId)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Reset local selection when the underlying feature changes (different polygon
+  // selected, or a successful mutation lands new hole_number from the server).
+  useEffect(() => {
+    setSelectedHoleId(currentHoleId)
+    setError(null)
+  }, [feature.id, currentHoleId])
+
+  const dirty = selectedHoleId !== '' && selectedHoleId !== currentHoleId
+  const disabled = submitting || !dirty
+
+  const onApply = async () => {
+    if (!dirty) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/features/${feature.id}/hole`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ holeId: selectedHoleId }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Reassign failed (${res.status})`
+        setError(message)
+        return
+      }
+      onSuccess(selectedHoleId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reassign failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const onCancel = () => {
+    setSelectedHoleId(currentHoleId)
+    setError(null)
+  }
+
+  return (
+    <div className="pt-3 mt-2 border-t border-gray-100">
+      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+        Reassign to hole
+      </label>
+      <select
+        value={selectedHoleId}
+        onChange={(e) => setSelectedHoleId(e.target.value)}
+        disabled={submitting}
+        className="w-full text-sm rounded-md border border-gray-300 px-2 py-1.5 bg-white disabled:bg-gray-100"
+        data-testid="reassign-hole-select"
+      >
+        {currentHoleId === '' && <option value="">Unassigned</option>}
+        {orderedHoles.map((h) => (
+          <option key={h.id} value={h.id}>
+            Hole {h.hole_number}
+          </option>
+        ))}
+      </select>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={disabled}
+          className="px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+          data-testid="reassign-hole-apply"
+        >
+          {submitting ? 'Applying…' : 'Apply'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={submitting || !dirty}
+          className="px-3 py-1.5 text-xs rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          data-testid="reassign-hole-cancel"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p
+          role="alert"
+          className="mt-2 text-xs text-red-700"
+          data-testid="reassign-hole-error"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function ChangeTypeControl({
+  feature,
+  onSuccess,
+}: {
+  feature: InspectorFeature
+  onSuccess: () => void
+}) {
+  const currentType = feature.feature_type
+  const [selectedType, setSelectedType] = useState<string>(currentType)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedType(currentType)
+    setError(null)
+  }, [feature.id, currentType])
+
+  const dirty = selectedType !== currentType
+  const disabled = submitting || !dirty
+
+  const onApply = async () => {
+    if (!dirty) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/features/${feature.id}/type`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: selectedType }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Type change failed (${res.status})`
+        setError(message)
+        return
+      }
+      onSuccess()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Type change failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const onCancel = () => {
+    setSelectedType(currentType)
+    setError(null)
+  }
+
+  return (
+    <div className="pt-3 mt-2 border-t border-gray-100">
+      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+        Feature type
+      </label>
+      <select
+        value={selectedType}
+        onChange={(e) => setSelectedType(e.target.value)}
+        disabled={submitting}
+        className="w-full text-sm rounded-md border border-gray-300 px-2 py-1.5 bg-white disabled:bg-gray-100"
+        data-testid="change-type-select"
+      >
+        {FEATURE_TYPE_OPTIONS.map((t) => (
+          <option key={t} value={t}>
+            {FEATURE_LABEL[t] ?? t}
+          </option>
+        ))}
+      </select>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={disabled}
+          className="px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+          data-testid="change-type-apply"
+        >
+          {submitting ? 'Applying…' : 'Apply'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={submitting || !dirty}
+          className="px-3 py-1.5 text-xs rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          data-testid="change-type-cancel"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p
+          role="alert"
+          className="mt-2 text-xs text-red-700"
+          data-testid="change-type-error"
+        >
+          {error}
+        </p>
+      )}
     </div>
   )
 }

@@ -1,4 +1,9 @@
 ## Codebase Patterns
+- Review UI mutation pattern: each correction control (reassign hole, change type, etc.) lives in its own sub-component inside Inspector.tsx with its own local `selectedValue`, `submitting`, and `error` state. `useEffect` resets local state on `feature.id` change so switching polygons doesn't carry stale selections. Apply button: `disabled = submitting || !dirty`. No optimistic updates — keep the original feature data visible until the parent refresh lands the new server state. Surface non-2xx as inline `role="alert"` text, not a global toast.
+- Inspector consumes `holes: HoleSummary[]` (full list for the course) so the reassign dropdown can render `Hole 1..N` without an extra fetch — the holes prop is already in ReviewWorkspace.
+- Map GeoJSON refresh after a successful correction goes through a memoised `refreshGeoJSON()` in ReviewWorkspace (used on mount AND after mutations). For hole-detail features, bump a `holeFeaturesVersion` state in ReviewWorkspace and include it in the hole-detail useEffect deps array — that forces a refetch without coupling to the GeoJSON load.
+- After PATCH /hole succeeds, the polygon may belong to a different hole; switch `selectedHoleId` to the new hole id (server returns it) so Inspector + map stay focused on the moved feature, and clear `selectedFeatureId` since the new hole's feature list will land via the standard hole-detail effect.
+- Feature type options for the UI: hardcode the array (`['green','fairway','tee_box','bunker','water_hazard'] as const`) in the client component — do NOT import `FeatureType` from `@prisma/client` into a 'use client' file because it pulls the runtime client into the browser bundle. The list is already mirrored in FEATURE_LABEL/FEATURE_SWATCH so keep them in sync if a new type is added.
 - Correction endpoints share a preflight flow: authenticate → UUID-validate featureId → parse+validate body → getFeatureForMutation (org isolation) → isLockedByOther (409) → body-specific 422s → $transaction([INSERT corrections, UPDATE/DELETE features]).
 - Every correction mutation MUST run as a Prisma $transaction with the corrections INSERT first and the feature mutation second, so a half-applied correction cannot ship.
 - corrections.original_geometry and features.geometry are both GEOMETRY(MultiPolygon,4326). Snapshot the prior geometry with INSERT ... SELECT f.geometry FROM features (no ST_AsGeoJSON round-trip needed).
@@ -96,6 +101,26 @@
   - Shipping original_geometry on list endpoints is wasteful — expose presence + ST_Area(::geography) instead. Full MultiPolygon should only go out on a single-correction detail endpoint when/if one is added.
   - `u.id AS corrected_by_id` + JS-side remap to `corrected_by: { id, email, name }` is cleaner than trying to nest via SQL `row_to_json` — the response shape is easier to type and unit-test.
   - `ST_Area(geom::geography)::float` returns m² regardless of SRID — reuse the pattern elsewhere when exposing measured areas to the UI.
+---
+
+## 2026-04-24 - US-008
+- Wired Inspector's reassign-hole and change-type dropdowns end to end so corrections submit through the existing PATCH endpoints.
+- Files changed:
+  - components/review/Inspector.tsx (FeatureView gains ReassignHoleControl + ChangeTypeControl; new props: holes, onReassignSuccess, onTypeChangeSuccess)
+  - components/review/ReviewWorkspace.tsx (extracted refreshGeoJSON callback; added holeFeaturesVersion state + onReassignSuccess / onTypeChangeSuccess callbacks; passes holes through to Inspector)
+  - prd.json (US-008 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns updates)
+- Flow:
+  1. Selecting a polygon in Inspector renders FeatureView with two control sections.
+  2. ReassignHoleControl: a <select> listing holes 1..N (sorted ASC, value = hole.id). Apply disabled until selection !== current hole. On click → PATCH /api/features/[featureId]/hole with { holeId }. On 2xx → onReassignSuccess(newHoleId) → ReviewWorkspace switches selectedHoleId to that new hole, clears selectedFeatureId, and refreshes GeoJSON. On non-2xx → inline `role="alert"` error, original state untouched.
+  3. ChangeTypeControl: a <select> with the 5 FeatureType options. Apply → PATCH /api/features/[featureId]/type with { featureType }. On 2xx → onTypeChangeSuccess() → ReviewWorkspace bumps holeFeaturesVersion (refetches the hole detail) and refreshes GeoJSON. On non-2xx → inline error.
+  4. Cancel reverts the select to currentValue and clears the error. submitting blocks both buttons + the select.
+- **Learnings for future iterations:**
+  - Don't `import { FeatureType } from '@prisma/client'` in a `'use client'` component — Prisma's runtime client gets pulled into the browser bundle (huge), and the enum values are already mirrored client-side in FEATURE_LABEL / FEATURE_SWATCH. Use a local `as const` tuple instead.
+  - For "no optimistic updates": don't mutate local feature state on success. Trigger a parent refresh and let the server-of-record data flow back through the existing hole-detail useEffect. Bumping a `version` int that's a useEffect dep is the cleanest way to force a refetch without restructuring the effect's other deps.
+  - Apply-button rule of thumb: `disabled = submitting || !dirty`. Track `dirty` against the LAST KNOWN server value (the prop), not the initial mount value — `useEffect` on `feature.id` resets local state when the underlying selection changes.
+  - When a reassign moves a polygon to a new hole, switching `selectedHoleId` to the new hole keeps the Inspector + map focused on the moved feature; otherwise it'd vanish from the current hole's feature list and the user would think it was lost.
+  - No dev-browser/playwright tool available in this environment — Browser AC for US-008 / US-009 / US-010 / etc. needs manual verification on `npm run dev`. Note this in the prd.json `notes` field rather than skipping the AC silently.
 ---
 
 ## 2026-04-24 - US-005

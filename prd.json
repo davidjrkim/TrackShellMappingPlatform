@@ -129,8 +129,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in components/review/Inspector.tsx + ReviewWorkspace.tsx. Added two new sub-controls in FeatureView: ReassignHoleControl (select with all hole numbers sorted ASC, value = hole.id) and ChangeTypeControl (select with the 5 FeatureType options). Each has its own Apply/Cancel pair. Apply is disabled until selectedValue !== currentValue (and during in-flight); Cancel reverts local state and clears the inline error. Apply calls PATCH /api/features/[featureId]/hole or /type respectively, with no optimistic write — the original feature data stays visible until the parent's refresh callback lands the new server state. Non-2xx surfaces the body.error inline as a role=alert <p>. ReviewWorkspace now exposes refreshGeoJSON (memoised) used both on mount and after onReassignSuccess / onTypeChangeSuccess; reassign also switches selectedHoleId to the new hole and the hole-detail effect refetches features via a holeFeaturesVersion bump. Browser verification: no dev-browser/playwright tool available in this environment — needs manual verification on the running dev server."
     },
     {
       "id": "US-009",
