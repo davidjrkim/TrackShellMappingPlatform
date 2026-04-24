@@ -44,6 +44,7 @@
 - Reject-path test seeds (US-017): a self-intersecting bowtie MultiPolygon `[[[a,b],[c,d],[c,b],[a,d],[a,b]]]` parses via ST_GeomFromGeoJSON but ST_IsValid returns false — use this to drive the 422 invalid-geometry path without the body-shape 400 kicking in first. For the area-floor test, a ~1e-5° × 1e-5° MultiPolygon at latitude 37° is ≈ 1.2 m², comfortably under the 20 m² floor.
 - Lock-conflict tests need two users in the same org; seed both in beforeAll, hold the lock by direct UPDATE (`SET locked_by = $userA, locked_at = NOW()`) and mock the session as userB. The 2-hour TTL guard in lib/corrections.ts means tests that want the lock to be "held" must use a recent NOW(); tests that want auto-release must use NOW() - INTERVAL '3 hours'.
 - Hard-delete audit assertions (US-018): after the feature row is gone, the corrections row carries feature_id=NULL (ON DELETE SET NULL) — look it up by `course_id + correction_type='polygon_delete'` instead of by feature_id. The polygon_delete route snapshots confidence_score into `notes` as JSON where the numeric value is emitted as a JSON number, not a string — assert via `Number(JSON.parse(notes).confidence_score)` / toBeCloseTo rather than matching a string. Geometry snapshot is best verified via `ST_Area(original_geometry::geography)` rather than round-tripping GeoJSON — faster and more readable.
+- Org-isolation tests (US-019): every correction endpoint returns 404 (not 403) when the caller's org doesn't match the resource. The helpers (getFeatureForMutation / getHoleForMutation / getLock / GET /corrections preflight) all join through `courses.org_id` and return null on mismatch — routes treat null as "not found" and never distinguish "exists elsewhere" from "doesn't exist". When asserting cross-org rejection, always pair the 404 assertion with a "no side-effect" assertion (feature/hole/course row unchanged + zero new corrections rows for the target course_id) so a leaky endpoint that 404s AFTER writing would still fail the test.
 ---
 
 ## 2026-04-24 - US-003
@@ -386,4 +387,27 @@
   - AC wording said "hole_id and assignment_confidence snapshots" but the corrections schema has no hole_id column and no assignment_confidence column. Map AC intent to the real schema: original_hole_number (for hole identity) and notes JSON.confidence_score (for feature confidence). Call this out explicitly in PRD notes so it isn't misread as drift.
   - confidence_score stored via `json_build_object('confidence_score', f.confidence_score)::text` emits a numeric JSON value, not a string. The test must `Number(parsed.confidence_score)` rather than `expect.any(String)` — got burned on first run.
   - Tests import route handlers lazily via `await import('@/app/...')` inside helpers so the next-auth mock is installed before module graph evaluation. Matches the pattern in corrections-transactions and corrections-reject-paths tests.
+---
+
+
+## 2026-04-24 - US-019
+- Added org-isolation tests covering every correction endpoint so a cross-org caller can never read or mutate another org's data.
+- Files changed:
+  - tests/api/corrections-org-isolation.test.ts (new — 7 tests, one per endpoint)
+  - prd.json (US-019 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Coverage:
+  1. PATCH /api/features/[featureId]/hole → 404 + feature.hole_id unchanged + zero corrections rows.
+  2. PATCH /api/features/[featureId]/type → 404 + feature.feature_type unchanged + zero corrections rows.
+  3. PATCH /api/features/[featureId]/geometry → 404 + ST_AsGeoJSON(geometry) unchanged + zero corrections rows.
+  4. DELETE /api/features/[featureId] → 404 + feature row still exists + zero corrections rows.
+  5. POST /api/courses/[id]/holes/[holeId]/confirm → 404 + hole needs_review/confirmed/confirmation_type untouched + zero corrections rows.
+  6. POST /api/courses/[id]/review/complete → 404 + courses.status still 'unmapped' + zero corrections rows.
+  7. GET /api/corrections?courseId=... → 404 + body.corrections undefined (pre-seeded orgB row not leaked).
+- Seed pattern: attacker user lives in orgA; course + holes + feature + one pre-seeded correction belong to orgB. beforeEach resets all mutable state (feature, corrections, course lock/status, hole flags) so test isolation is airtight. Session mocked as attacker for every test.
+- **Learnings for future iterations:**
+  - All correction endpoints use 404 (not 403) for cross-org access — that's by design. The helpers join through courses.org_id and return null on mismatch; routes treat null identically to "not found". Don't expect 403.
+  - Pair every 404 assertion with a "no side-effect" assertion. A bug that 404s AFTER landing a write would still be a security hole; the no-corrections-rows + no-row-mutation checks catch that.
+  - GET endpoints need a body-level assertion in addition to the status code — a buggy implementation that 404s via a thrown error but sent a partial body via a prior `res.write` would still leak; asserting `body.corrections === undefined` catches it.
+  - The jobs.test.ts failure (Cannot find module '@/lib/pipeline') still present — unrelated to this story.
 ---

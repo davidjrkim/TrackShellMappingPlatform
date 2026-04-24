@@ -298,8 +298,8 @@
         "Tests pass"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-org-isolation.test.ts — 7 tests, one per correction endpoint (PATCH hole, PATCH type, PATCH geometry, DELETE feature, POST confirm, POST review/complete, GET corrections). Seeds two orgs: attacker user lives in orgA, the course + holes + feature + one existing correction row belong to orgB. Every endpoint invoked with the attacker session must return 404 (not 403 — all helpers join through courses.org_id and return null rather than distinguishing 'exists but other org' from 'does not exist'). Each test also asserts no side-effect landed: feature.hole_id / feature_type / geometry unchanged; hole needs_review/confirmed/confirmation_type untouched; courses.status still 'unmapped'; zero new corrections rows for the target course_id. GET /corrections additionally asserts body.corrections is undefined so the pre-seeded orgB row isn't leaked. Reuses ensureOrg/ensureUser/sessionFor helpers from the other test files; beforeEach resets feature + corrections + course lock/status + hole flags so one test's accidental write can't be misread as the next test's success."
     },
     {
       "id": "US-020",
