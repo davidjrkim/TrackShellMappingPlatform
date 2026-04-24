@@ -7,6 +7,7 @@ import MapCanvas, { type MapCanvasHandle } from './MapCanvas'
 import Inspector, { type InspectorFeature } from './Inspector'
 import DrawMode from '@/components/map/DrawMode'
 import DeletePolygonDialog from './DeletePolygonDialog'
+import SignOffDialog from './SignOffDialog'
 
 type LockInfo = {
   locked_by: string | null
@@ -115,6 +116,8 @@ export default function ReviewWorkspace({
   const [confirmInFlight, setConfirmInFlight] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
 
+  const [signOffOpen, setSignOffOpen] = useState(false)
+
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
     | { status: 'conflict'; lockedBy: { name: string; email: string; lockedAt: string } }
@@ -141,6 +144,13 @@ export default function ReviewWorkspace({
   const selectedHole = useMemo(
     () => holes.find((h) => h.id === selectedHoleId) ?? null,
     [holes, selectedHoleId],
+  )
+
+  // Sign-off is reachable once every flagged hole has been resolved
+  // (either confirmed manually or cleared of the needs_review flag).
+  const hasBlockingFlagged = useMemo(
+    () => holes.some((h) => h.needs_review && !h.confirmed),
+    [holes],
   )
 
   const selectedTopology = selectedHoleId ? topologyByHoleId[selectedHoleId] ?? null : null
@@ -481,6 +491,10 @@ export default function ReviewWorkspace({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return
+      // While the sign-off dialog is open it owns the keyboard — it has its
+      // own capture-phase Escape handler, and workspace shortcuts (D, Delete,
+      // Enter, Ctrl+Z, fit-to-*) would otherwise fire on the map underneath.
+      if (signOffOpen) return
       // Ctrl+Z / ⌘+Z — single-level undo of the last correction.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
         if (drawModeActive) return
@@ -563,7 +577,7 @@ export default function ReviewWorkspace({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, lastCorrection, applyUndo, confirmActiveHole])
+  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, signOffOpen, lastCorrection, applyUndo, confirmActiveHole])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -668,6 +682,21 @@ export default function ReviewWorkspace({
               </button>
             )
           })()}
+
+          <button
+            type="button"
+            onClick={() => setSignOffOpen(true)}
+            disabled={hasBlockingFlagged}
+            title={
+              hasBlockingFlagged
+                ? 'Confirm all flagged holes before signing off'
+                : 'Sign off course'
+            }
+            className="px-2.5 py-1.5 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700 shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+            data-testid="signoff-open"
+          >
+            Sign off course
+          </button>
         </div>
 
         {confirmError && (
@@ -735,6 +764,15 @@ export default function ReviewWorkspace({
           feature={deleteDialogFeature}
           onCancel={() => setDeleteDialogFeature(null)}
           onSuccess={onDeleteSuccess}
+        />
+      )}
+
+      {signOffOpen && (
+        <SignOffDialog
+          courseId={courseId}
+          holes={holes}
+          onCancel={() => setSignOffOpen(false)}
+          onSignedOff={() => setSignOffOpen(false)}
         />
       )}
     </div>

@@ -225,8 +225,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 14,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented components/review/SignOffDialog.tsx (fixed-inset role=dialog modal, capture-phase Escape handler mirroring DeletePolygonDialog). On mount fetches GET /api/corrections?courseId=... and reduces to per-type counts; reassignments/type changes/geometry edits/polygon deletes rendered in a 2-col dl, plus an 'Auto-confirmed on sign-off' total computed client-side as holes.filter(!h.confirmed).length so the reviewer sees what the auto-confirm path will touch. Reviewer-notes <textarea> wired to POST /api/courses/[id]/review/complete with { notes } — empty/whitespace-only notes are sent as undefined (the endpoint already trims). 400 responses read body.blocking_holes and render inline: 'Still blocking: Hole 3, Hole 7' with the error banner's Retry button re-submitting. Non-400 non-2xx also surface inline with Retry. On 2xx: onSignedOff() closes the dialog and router.push('/dashboard/courses/[id]/overview') + router.refresh() so the overview reflects the new 'reviewed' status. ReviewWorkspace hosts a 'Sign off course' button in the map top-right controls (blue primary, disabled with tooltip when holes.some(needs_review && !confirmed), data-testid='signoff-open'); dialog rendered at workspace root. Added a signOffOpen guard at the top of the global keydown handler so the underlying D/Delete/Backspace/Enter/Ctrl+Z shortcuts don't fire while the modal is up. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
     },
     {
       "id": "US-015",
