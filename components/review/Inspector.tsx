@@ -421,13 +421,22 @@ function ReassignHoleControl({
         </button>
       </div>
       {error && (
-        <p
+        <div
           role="alert"
-          className="mt-2 text-xs text-red-700"
+          className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-800"
           data-testid="reassign-hole-error"
         >
-          {error}
-        </p>
+          <span className="leading-relaxed">{error}</span>
+          <button
+            type="button"
+            onClick={onApply}
+            disabled={submitting}
+            className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="reassign-hole-retry"
+          >
+            Retry
+          </button>
+        </div>
       )}
     </div>
   )
@@ -524,13 +533,22 @@ function ChangeTypeControl({
         </button>
       </div>
       {error && (
-        <p
+        <div
           role="alert"
-          className="mt-2 text-xs text-red-700"
+          className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-800"
           data-testid="change-type-error"
         >
-          {error}
-        </p>
+          <span className="leading-relaxed">{error}</span>
+          <button
+            type="button"
+            onClick={onApply}
+            disabled={submitting}
+            className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="change-type-retry"
+          >
+            Retry
+          </button>
+        </div>
       )}
     </div>
   )

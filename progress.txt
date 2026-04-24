@@ -203,6 +203,27 @@
   - For reassign undo, don't just flip the hole — also reset selectedHoleId to the prior hole. Otherwise the polygon appears to vanish because the Inspector is focused on the NEW hole whose feature list no longer contains it after the undo lands.
   - Ctrl/Cmd+Z key detection needs the guard `!e.shiftKey && !e.altKey` — otherwise Ctrl+Shift+Z (redo, not implemented) would also trigger undo.
   - For corrections with no way to invert (polygon_delete without a feature-insert endpoint), record a `{undoable:false, reason}` slot rather than null. Null hides the button entirely; a disabled slot shows the user WHY undo isn't available.
+- Error-with-Retry banner pattern: use a `<div role="alert">` containing `<span>{message}</span><button onClick={sameSubmitFn} disabled={submitting}>Retry</button>`. Retry calls the SAME submit handler (onApply / apply / onConfirm / applyUndo) — it does NOT clear the error first. The submit handler re-entry starts with `setError(null)` so a successful retry naturally dismisses the banner, and a repeat failure replaces the message. The banner stays visible (not torn down + remounted), so a click on Retry doesn't race with the disabled prop flip.
+---
+
+## 2026-04-24 - US-012
+- Added Retry button to every correction-mutation error banner so a failed save never looks like a success and the reviewer can re-fire the same request without retyping the selection.
+- Files changed:
+  - components/review/Inspector.tsx (ReassignHoleControl + ChangeTypeControl error banners upgraded from bare <p> to flex container with message + Retry; Retry calls onApply, disabled while submitting)
+  - components/map/DrawMode.tsx (error banner gained Retry that calls apply; still sits below the Draw toolbar)
+  - components/review/DeletePolygonDialog.tsx (error banner gained Retry that calls onConfirm; modal stays open for retry)
+  - components/review/ReviewWorkspace.tsx (undo error banner gained Retry that calls applyUndo, only rendered when lastCorrection.undoable=true so a non-undoable slot doesn't offer a retry button)
+  - prd.json (US-012 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- ACs satisfied:
+  1. Non-2xx / network error = failure: already true across all four mutations + undo (no optimistic updates anywhere; original feature data stays visible until parent refresh lands new server state on 2xx).
+  2. Banner with Retry: now on every mutation error surface.
+  3. No optimistic updates: already true, verified during walkthrough (Inspector selects revert on Cancel; DrawMode keeps working geometry in a ref until 2xx; Delete modal keeps feature visible until DELETE returns 204).
+- **Learnings for future iterations:**
+  - The "no optimistic updates" principle is satisfied by the existing architecture — controls read from `feature` prop (server-of-record) and parent-driven refreshGeoJSON/holeFeaturesVersion only fires on 2xx. The Retry button is effectively the UI contract that makes this visible to the user; the data-flow invariant was already in place.
+  - Retry should dispatch the SAME handler, not duplicate the fetch inline. Re-entering the submit function re-runs all the preflight logic (setError(null), setSubmitting(true), dirty check) for free.
+  - For the undo banner, guard the Retry button with `lastCorrection.undoable` — a non-undoable slot (polygon_delete) shouldn't offer retry because there's no PATCH to re-fire. Leave the banner text for context but omit the button.
+  - Avoid introducing a toast library for a single recoverable error per control — inline banners co-located with the control they came from are easier to associate visually than a top-right toast stack, and the AC wording ("toast or banner") explicitly allows this.
 ---
 
 ## 2026-04-24 - US-005

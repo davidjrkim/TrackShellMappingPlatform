@@ -80,9 +80,22 @@ export default function DeletePolygonDialog({ feature, onCancel, onSuccess }: Pr
           This cannot be undone.
         </p>
         {error && (
-          <p role="alert" className="text-xs text-red-700 mt-3" data-testid="delete-polygon-error">
-            {error}
-          </p>
+          <div
+            role="alert"
+            className="mt-3 flex items-center justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-800"
+            data-testid="delete-polygon-error"
+          >
+            <span className="leading-relaxed">{error}</span>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={submitting}
+              className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="delete-polygon-retry"
+            >
+              Retry
+            </button>
+          </div>
         )}
         <div className="flex justify-end gap-2 mt-5">
           <button

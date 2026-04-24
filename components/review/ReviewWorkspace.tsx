@@ -615,10 +615,21 @@ export default function ReviewWorkspace({
         {undoError && (
           <div
             role="alert"
-            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
             data-testid="undo-error"
           >
-            {undoError}
+            <span>{undoError}</span>
+            {lastCorrection && lastCorrection.undoable && (
+              <button
+                type="button"
+                onClick={() => void applyUndo()}
+                disabled={undoInFlight}
+                className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="undo-retry"
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
 

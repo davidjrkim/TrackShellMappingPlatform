@@ -174,13 +174,22 @@ export default function DrawMode({ map, feature, onSaved, onCancel }: Props) {
         </button>
       </div>
       {error && (
-        <p
+        <div
           role="alert"
-          className="px-3 py-1.5 text-xs rounded-md bg-red-50 border border-red-200 text-red-800 shadow-sm"
+          className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md bg-red-50 border border-red-200 text-red-800 shadow-sm"
           data-testid="draw-mode-error"
         >
-          {error}
-        </p>
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={apply}
+            disabled={submitting}
+            className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="draw-mode-retry"
+          >
+            Retry
+          </button>
+        </div>
       )}
     </div>
   )

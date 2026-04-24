@@ -191,8 +191,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "All four correction mutations (reassign hole, change type, edit geometry, delete) plus Ctrl+Z undo already treat non-2xx and network errors as failure with no optimistic updates — the original feature/hole state stays visible because each control reads the feature prop from the server-of-record and a parent refreshGeoJSON/holeFeaturesVersion bump lands the new state only on 2xx. This story wires a Retry button into each inline error banner: components/review/Inspector.tsx (ReassignHoleControl + ChangeTypeControl) swapped the bare <p role=alert> for a red-bordered banner containing the message + Retry button that calls the same onApply; components/map/DrawMode.tsx error banner gained a Retry that calls apply; components/review/DeletePolygonDialog.tsx error banner gained a Retry that calls onConfirm; components/review/ReviewWorkspace.tsx undo error banner gained a Retry that calls applyUndo (only rendered when the slot is still undoable). Retry buttons are disabled while submitting so a rapid re-click doesn't double-submit. No toast library was introduced — the existing inline-banner pattern already satisfies the AC's 'toast or banner' wording and keeps the error next to the control it came from."
     },
     {
       "id": "US-013",
