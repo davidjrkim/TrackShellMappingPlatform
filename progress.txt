@@ -39,6 +39,8 @@
 - For dialogs that navigate away on success, call both `router.push(path)` AND `router.refresh()` — push alone uses the cached server component render (the course status still reads as 'flagged' until the next hard reload). Refresh invalidates the RSC cache so the new 'reviewed' status lands on first paint of the overview.
 - Auto-advance-on-confirm pattern: after the confirm-hole 2xx lands, compute the next flagged hole from a LOCAL `updated` array (not from the `holes` state, which won't have the new confirmed=true yet) and setSelectedHoleId to it. The existing re-center useEffect on selectedHoleId handles fitToHole, so no explicit mapRef.fitToHole call is needed. Sort order: assignment_confidence ASC, then hole_number ASC as tiebreaker — matches HoleList.orderHolesForReview so the UI focus matches what the reviewer sees at the top of the list.
 - To compute derived next-selection state from a just-updated list while avoiding nested setters, refactor `setHoles(prev => prev.map(...))` to `const updated = holes.map(...); setHoles(updated); if (nextFrom(updated)) setSelectedHoleId(...)`. React is fine with two independent setStates in the same callback; batching handles the re-render. Keep the `holes` dep in useCallback so the mapping reads the latest snapshot.
+- Transaction-integrity test pattern (US-016): to prove a route handler's `db.$transaction([a, b])` is atomic without mocking Prisma entirely, capture `const realTransaction = db.$transaction.bind(db)` at module scope, then per-test `jest.spyOn(db, '$transaction').mockImplementationOnce(arg => realTransaction([arg[0], db.$executeRaw\`SELECT 1/0\`]))`. The real $transaction still runs the modified array in one Postgres tx, so the forced division-by-zero rolls back the sibling statement. Verifies atomicity from outside the route — no need to reach into Prisma internals. Reset mocks with `jest.restoreAllMocks()` in afterEach so one test's stub doesn't bleed into the next.
+- Seeding a feature row for tests requires raw SQL because Prisma cannot write PostGIS geometry: `INSERT INTO features (id, hole_id, course_id, feature_type, geometry) VALUES (gen_random_uuid(), $hole::uuid, $course::uuid, 'green'::feature_type_enum, ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) RETURNING id`. Use a polygon larger than 20 m² (the floor PATCH /geometry enforces) — e.g. 0.001° × 0.001° at latitude 37° ≈ 9,900 m².
 ---
 
 ## 2026-04-24 - US-003
@@ -300,6 +302,31 @@
   - HoleList's orderHolesForReview() is the authoritative ordering the user sees. When programmatically picking "the next hole", sort by the same keys (assignment_confidence ASC, hole_number ASC as tiebreaker) so the UI selection matches the top of the visible list.
   - The re-render after setHoles + setSelectedHoleId batches into a single paint in React 18 — no flash of the just-confirmed hole before the advance.
   - No dev-browser tool in this environment — browser AC needs manual verification on npm run dev. Steps: load a course with 2+ flagged holes, confirm one, watch focus move to the next lowest-confidence flagged hole and the map pan/zoom. Confirm the last flagged hole and watch the green CTA banner appear; click it and the sign-off dialog should open.
+---
+
+
+## 2026-04-24 - US-016
+- Added Jest tests proving transaction integrity for all four correction-mutation endpoints.
+- Files changed:
+  - tests/api/corrections-transactions.test.ts (new — 8 tests, 2 per endpoint)
+  - prd.json (US-016 passes=true + notes)
+  - progress.txt (this entry + 2 new Codebase Patterns)
+- Strategy:
+  1. `const realTransaction = db.$transaction.bind(db)` captured at module scope before any spy.
+  2. Per test: `jest.spyOn(db, '$transaction').mockImplementationOnce(arg => realTransaction([arg[0], db.$executeRaw\`SELECT 1/0\`]))` — swap one of the two statements for a failing raw SQL, still running inside the real PG transaction.
+  3. Invoke the route handler (PATCH/DELETE exported function) and `await expect(invoke()).rejects.toThrow()`.
+  4. Read DB state with raw SELECTs and assert: feature row unchanged (hole_id, feature_type, or ST_AsGeoJSON(geometry) — depending on the endpoint), and zero corrections rows with the matching correction_type.
+- Coverage:
+  - PATCH /hole: second fails → hole_id stays on hole1, no 'hole_reassignment' row; first fails → same.
+  - PATCH /type: second fails → feature_type stays 'green', no 'type_change' row; first fails → same.
+  - PATCH /geometry: second fails → geojson matches the pre-test snapshot, no 'geometry_edit' row; first fails → same.
+  - DELETE /feature: second fails → feature row still exists, no 'polygon_delete' row; first fails → same.
+- Seed pattern: `beforeAll` creates org + user + course + 2 holes; `beforeEach` resets the feature (raw SQL INSERT with ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) and clears corrections; `afterAll` tears it all down. Uses the same docker-compose Postgres/PostGIS as the other tests/api suites.
+- **Learnings for future iterations:**
+  - Don't try to mock Prisma end-to-end for atomicity tests. Intercepting $transaction and forwarding to a bound reference with one substituted statement is minimal and proves atomicity at the PG level rather than in TypeScript.
+  - `SELECT 1/0` is a portable way to raise inside a Postgres transaction without inventing a test-only table or trigger. It bubbles up as a Prisma error and aborts the tx — exactly what the test wants to prove.
+  - `jest.restoreAllMocks()` in afterEach is necessary because `mockImplementationOnce` consumes one call but leaves the spy object attached — without restore, a second test in the same describe() block that also spies will trip over the leftover spy.
+  - The pre-existing tests/api/jobs.test.ts failure (Cannot find module '@/lib/pipeline') is unrelated — flagged in the US-013 progress note — and does not affect this suite.
 ---
 
 

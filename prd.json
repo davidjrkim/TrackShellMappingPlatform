@@ -255,8 +255,8 @@
         "Tests pass"
       ],
       "priority": 16,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-transactions.test.ts — 8 tests covering the 4 correction endpoints (PATCH /hole, PATCH /type, PATCH /geometry, DELETE /feature). Strategy: spy on db.$transaction and swap ONE element of the 2-statement array for a failing raw SQL (SELECT 1/0), then forward to the real $transaction bound reference. Because the real $transaction runs the array in a single Postgres tx, the forced failure rolls back the sibling statement, proving atomicity from the outside. For each endpoint: (1) force second statement to fail → assert feature row unchanged + zero corrections rows with the matching correction_type; (2) force first statement to fail → same assertions. Uses the same docker-compose Postgres/PostGIS instance as the existing tests/api suites; seeds org + user + course + 2 holes in beforeAll, resets features + corrections in beforeEach, tears everything down in afterAll. realTransaction captured via `db.$transaction.bind(db)` at module scope before any spy, so mockImplementationOnce can forward to it cleanly."
     },
     {
       "id": "US-017",
