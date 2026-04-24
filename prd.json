@@ -285,8 +285,8 @@
         "Tests pass"
       ],
       "priority": 18,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-hard-delete.test.ts — 2 tests. (1) Calls DELETE /api/features/[featureId] and asserts status=204 + SELECT from features returns 0 rows. (2) Seeds a feature with feature_type='bunker', confidence_score=0.654 on hole_number=7, then after DELETE asserts exactly one corrections row exists for that course with correction_type='polygon_delete', feature_id IS NULL (ON DELETE SET NULL), has_geometry_snapshot=true, ST_Area(original_geometry::geography) between 9,000–11,000 m² (seeded ~9,900 m²), original_feature_type='bunker', original_hole_number=7, notes contains valid JSON with confidence_score≈0.654, and corrected_by=session.user.id. Seeding pattern mirrors corrections-transactions.test.ts but adds confidence_score to the INSERT (the existing transaction test uses a bare seed). Note: corrections schema has no hole_id column — AC's 'hole_id snapshot' is satisfied by original_hole_number, which is the human-meaningful identity the existing route populates via LEFT JOIN holes."
     },
     {
       "id": "US-019",

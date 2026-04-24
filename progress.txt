@@ -43,6 +43,7 @@
 - Seeding a feature row for tests requires raw SQL because Prisma cannot write PostGIS geometry: `INSERT INTO features (id, hole_id, course_id, feature_type, geometry) VALUES (gen_random_uuid(), $hole::uuid, $course::uuid, 'green'::feature_type_enum, ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) RETURNING id`. Use a polygon larger than 20 m² (the floor PATCH /geometry enforces) — e.g. 0.001° × 0.001° at latitude 37° ≈ 9,900 m².
 - Reject-path test seeds (US-017): a self-intersecting bowtie MultiPolygon `[[[a,b],[c,d],[c,b],[a,d],[a,b]]]` parses via ST_GeomFromGeoJSON but ST_IsValid returns false — use this to drive the 422 invalid-geometry path without the body-shape 400 kicking in first. For the area-floor test, a ~1e-5° × 1e-5° MultiPolygon at latitude 37° is ≈ 1.2 m², comfortably under the 20 m² floor.
 - Lock-conflict tests need two users in the same org; seed both in beforeAll, hold the lock by direct UPDATE (`SET locked_by = $userA, locked_at = NOW()`) and mock the session as userB. The 2-hour TTL guard in lib/corrections.ts means tests that want the lock to be "held" must use a recent NOW(); tests that want auto-release must use NOW() - INTERVAL '3 hours'.
+- Hard-delete audit assertions (US-018): after the feature row is gone, the corrections row carries feature_id=NULL (ON DELETE SET NULL) — look it up by `course_id + correction_type='polygon_delete'` instead of by feature_id. The polygon_delete route snapshots confidence_score into `notes` as JSON where the numeric value is emitted as a JSON number, not a string — assert via `Number(JSON.parse(notes).confidence_score)` / toBeCloseTo rather than matching a string. Geometry snapshot is best verified via `ST_Area(original_geometry::geography)` rather than round-tripping GeoJSON — faster and more readable.
 ---
 
 ## 2026-04-24 - US-003
@@ -368,4 +369,21 @@
   - When a test wants to assert "reject-path didn't leak writes", count the corrections rows by correction_type rather than just the feature state — a route that somehow inserted the audit row but failed the mutation still needs to be caught.
   - For lock-conflict tests, mock the session via the next-auth mock as userB AFTER the UPDATE that sets locked_by=userA. Otherwise timing-dependent readers (if any) could see a different lock state during the session hydration.
   - The pre-existing `tests/api/jobs.test.ts` failure (`Cannot find module '@/lib/pipeline'`) still exists and is unrelated to this work — 8 of 9 test suites pass, 42 tests pass.
+---
+
+## 2026-04-24 - US-018
+- Added hard-delete corrections-row survival tests to guarantee the audit trail is intact after DELETE /api/features/[featureId].
+- Files changed:
+  - tests/api/corrections-hard-delete.test.ts (new — 2 tests)
+  - prd.json (US-018 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Seed org + user + course + one hole (hole_number=7) + one feature (feature_type='bunker', confidence_score=0.654, MultiPolygon ~9,900 m²).
+  2. Test A — calls DELETE handler, asserts status=204, then SELECT id FROM features WHERE id=$1 returns 0 rows.
+  3. Test B — same call, then SELECT corrections WHERE course_id=$1 AND correction_type='polygon_delete' returns exactly 1 row with: feature_id IS NULL, has_geometry_snapshot=true, ST_Area(::geography) within [9000,11000], original_feature_type='bunker', original_hole_number=7, notes JSON includes confidence_score ≈ 0.654, corrected_by = session.user.id.
+- **Learnings for future iterations:**
+  - The seed in corrections-transactions.test.ts does not populate features.confidence_score. For audit-snapshot assertions you need to add `confidence_score` to the INSERT or the notes JSON will show `{"confidence_score": null}` and break the assertion.
+  - AC wording said "hole_id and assignment_confidence snapshots" but the corrections schema has no hole_id column and no assignment_confidence column. Map AC intent to the real schema: original_hole_number (for hole identity) and notes JSON.confidence_score (for feature confidence). Call this out explicitly in PRD notes so it isn't misread as drift.
+  - confidence_score stored via `json_build_object('confidence_score', f.confidence_score)::text` emits a numeric JSON value, not a string. The test must `Number(parsed.confidence_score)` rather than `expect.any(String)` — got burned on first run.
+  - Tests import route handlers lazily via `await import('@/app/...')` inside helpers so the next-auth mock is installed before module graph evaluation. Matches the pattern in corrections-transactions and corrections-reject-paths tests.
 ---
