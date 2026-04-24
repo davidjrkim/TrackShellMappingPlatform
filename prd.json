@@ -1,0 +1,362 @@
+{
+  "project": "TrackShellMappingPlatform",
+  "branchName": "ralph/mvp-corrections-signoff",
+  "description": "Week 6 + Week 7 of ROADMAP.md — corrections API, review UI mutations, course sign-off to hit MVP (M6), then polish/tests/production hardening (M7).",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "PATCH /api/features/[featureId]/hole — reassign hole",
+      "description": "As a reviewer, I want to reassign a polygon to a different hole so that AI misassignments can be corrected.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/hole/route.ts with PATCH handler",
+        "Requires valid session; enforces org isolation via course.org_id on the feature",
+        "Rejects with 409 if the course is locked by a different user",
+        "Writes a corrections row with correction_type = 'hole_reassignment' and old_hole_id/new_hole_id BEFORE updating features.hole_id — both in the same Prisma transaction",
+        "Returns 422 if new hole_id does not belong to the same course",
+        "Returns updated feature JSON on success",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/hole/route.ts + lib/corrections.ts helpers (getFeatureForMutation, getHoleRef, isLockedByOther). Atomic $transaction writes corrections row before UPDATE features.hole_id."
+    },
+    {
+      "id": "US-002",
+      "title": "PATCH /api/features/[featureId]/type — change feature type",
+      "description": "As a reviewer, I want to change a polygon's feature type so that mis-typed features (e.g. bunker labelled as green) can be corrected.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/type/route.ts with PATCH handler",
+        "Validates new feature_type against FeatureType enum; 422 on invalid",
+        "Rejects 409 if course locked by another user",
+        "Writes corrections row with correction_type = 'type_change', old_type, new_type BEFORE the UPDATE — same transaction",
+        "Returns updated feature JSON on success",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "PATCH /api/features/[featureId]/geometry — edit polygon geometry",
+      "description": "As a reviewer, I want to save edited polygon geometry after vertex dragging so that AI polygon boundaries can be refined.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/geometry/route.ts with PATCH handler",
+        "Accepts GeoJSON MultiPolygon in request body",
+        "Uses raw SQL in lib/spatial.ts to run ST_IsValid and ST_Area(geometry::geography) — returns 422 if invalid or area < 20 m²",
+        "Rejects 409 if course locked by another user",
+        "Writes corrections row with correction_type = 'geometry_edit' and snapshot of prior geometry BEFORE updating features.geometry — same transaction",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "DELETE /api/features/[featureId] — hard delete polygon with snapshot",
+      "description": "As a reviewer, I want to delete a spurious polygon so the course geometry reflects reality.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/route.ts with DELETE handler",
+        "Rejects 409 if course locked by another user",
+        "Snapshots geometry, feature_type, hole_id, assignment_confidence into the corrections row (correction_type = 'polygon_delete') BEFORE the hard DELETE — same transaction",
+        "Corrections row survives after feature row is removed",
+        "Returns 204 on success",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "POST /api/courses/[id]/holes/[holeId]/confirm — confirm hole",
+      "description": "As a reviewer, I want to mark a hole as confirmed so that sign-off can complete.",
+      "acceptanceCriteria": [
+        "Route at app/api/courses/[id]/holes/[holeId]/confirm/route.ts with POST handler",
+        "Rejects 409 if course locked by another user",
+        "In one transaction: sets holes.needs_review = false, holes.confirmed = true, holes.confirmation_type = 'manual', and features.reviewed = true for all features on that hole",
+        "Writes corrections row with correction_type = 'hole_confirmed'",
+        "Returns updated hole JSON",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "POST /api/courses/[id]/review/complete — course sign-off",
+      "description": "As a reviewer, I want to sign off on a course so it can progress to publishable state.",
+      "acceptanceCriteria": [
+        "Route at app/api/courses/[id]/review/complete/route.ts with POST handler",
+        "Rejects 409 if locked by another user",
+        "Returns 400 if any hole on the course has needs_review = true AND confirmed = false",
+        "In one transaction: auto-confirms remaining high-confidence holes (sets confirmed = true, confirmation_type = 'auto'), sets courses.status = 'reviewed', records reviewer notes (optional body field) onto the final corrections summary row",
+        "Releases the course lock on success",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "GET /api/corrections — correction history by course",
+      "description": "As a reviewer, I want to read correction history for a course so I can audit what changed.",
+      "acceptanceCriteria": [
+        "Route at app/api/corrections/route.ts with GET handler",
+        "Accepts courseId query param; returns 400 if missing",
+        "Enforces org isolation via the course's org_id",
+        "Returns corrections ordered by created_at DESC with user email/name, correction_type, and geometry snapshot metadata",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Wire Inspector reassign-hole and change-type dropdowns",
+      "description": "As a reviewer, I want the Inspector panel controls to actually submit reassignment and type changes so corrections flow end to end.",
+      "acceptanceCriteria": [
+        "components/review/Inspector.tsx polygon view has a 'Reassign to hole' dropdown listing holes 1..N for the course; calling PATCH /api/features/[featureId]/hole on Apply",
+        "Polygon view has a 'Feature type' dropdown bound to FeatureType enum; calling PATCH /api/features/[featureId]/type on Apply",
+        "Apply button disabled until selection differs from current value; Cancel reverts",
+        "Blocks the Apply button during in-flight request; surfaces non-2xx errors inline (no optimistic writes)",
+        "Map canvas re-fetches GeoJSON after a successful mutation",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Mapbox GL Draw vertex-drag geometry editing",
+      "description": "As a reviewer, I want to drag polygon vertices on the map and save the new shape so boundaries can be refined.",
+      "acceptanceCriteria": [
+        "components/map/DrawMode.tsx wraps Mapbox GL Draw and mounts onto the review MapCanvas",
+        "'D' keyboard shortcut toggles draw mode on the currently selected polygon",
+        "While in draw mode, existing vertices are draggable; Enter/Apply submits the edited MultiPolygon to PATCH /api/features/[featureId]/geometry",
+        "422 responses surface an inline error and leave the original geometry untouched in the UI",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Delete polygon confirmation dialog",
+      "description": "As a reviewer, I want a confirmation dialog before deleting a polygon so I don't delete by accident.",
+      "acceptanceCriteria": [
+        "Delete action in Inspector opens a modal showing feature_type, hole number, and a 'Cannot be undone' warning",
+        "Confirm triggers DELETE /api/features/[featureId]; Cancel closes the modal with no request",
+        "Delete/Backspace key also triggers the dialog when a polygon is selected",
+        "On 2xx the polygon disappears from the map and hole polygon list refreshes",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Ctrl+Z single-level undo per correction",
+      "description": "As a reviewer, I want to undo my last correction so I can recover from a misclick.",
+      "acceptanceCriteria": [
+        "Review page tracks the last applied correction (type + payload) in client state",
+        "Ctrl+Z issues the inverse correction via the correction API (e.g. reassign back to prior hole, restore prior type/geometry, recreate deleted polygon via a new feature insert endpoint only if the original still has snapshot data — otherwise undo is disabled with tooltip)",
+        "Only one level of undo — after undo, the slot is cleared",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Offline / server-failure warning — block submission without 2xx",
+      "description": "As a reviewer, I want a clear warning if my correction didn't save, so I never assume a failed save succeeded.",
+      "acceptanceCriteria": [
+        "All correction mutations in Inspector/DrawMode/Delete treat non-2xx (or network error) as failure: UI state does NOT advance and the original polygon/hole state remains visible",
+        "Toast or banner shows the error message with a Retry button",
+        "No optimistic updates anywhere in the review UI",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Review UI keyboard shortcuts — D, Delete/Backspace, Enter, Ctrl+Z",
+      "description": "As a reviewer, I want keyboard shortcuts for frequent correction actions so I can review quickly.",
+      "acceptanceCriteria": [
+        "D toggles draw mode on selected polygon (already shipped via US-009 — confirm global handler)",
+        "Delete or Backspace opens delete-polygon dialog when a polygon is selected",
+        "Enter confirms the currently active hole (calls POST /confirm)",
+        "Ctrl+Z triggers single-level undo",
+        "Shortcuts are no-ops when focus is inside an input/textarea",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Sign-off screen with correction summary and reviewer notes",
+      "description": "As a reviewer, I want a final sign-off view with a summary and notes field so I can close out the course.",
+      "acceptanceCriteria": [
+        "Sign-off view reachable from the review page once all flagged holes are resolved",
+        "Shows correction counts by type (reassignment, type change, geometry edit, delete), auto-confirm count, and a textarea for reviewer notes",
+        "'Mark Course Reviewed' button calls POST /api/courses/[id]/review/complete with the notes in body",
+        "400 responses render inline with the names of holes still blocking sign-off",
+        "On success navigates back to /dashboard/courses/[id]/overview with the course now in 'reviewed' status",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Auto-advance to next flagged hole on confirm",
+      "description": "As a reviewer, I want the UI to jump to the next flagged hole after I confirm one so I can move through review without clicking.",
+      "acceptanceCriteria": [
+        "After a successful POST /confirm, HoleList selects the next hole where needs_review = true AND confirmed = false (by lowest assignment_confidence)",
+        "Map fits to the newly selected hole",
+        "When no flagged holes remain, the UI surfaces a 'Ready to sign off' CTA to open the sign-off screen",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Tests — transaction integrity for correction endpoints",
+      "description": "As a developer, I want tests that prove corrections + mutations are atomic so a half-applied correction can never ship.",
+      "acceptanceCriteria": [
+        "Jest tests under tests/api/ cover: PATCH hole, PATCH type, PATCH geometry, DELETE feature",
+        "Each test forces the feature mutation to fail (e.g. invalid FK) and asserts the corrections row was rolled back too",
+        "And forces the corrections insert to fail and asserts the feature row was unchanged",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Tests — lock 409, geometry 422, sign-off 400",
+      "description": "As a developer, I want behavioural tests on the key reject paths so regressions are caught in CI.",
+      "acceptanceCriteria": [
+        "Test: a correction endpoint returns 409 when the course lock is held by a different user",
+        "Test: PATCH geometry returns 422 for ST_IsValid = false polygon",
+        "Test: PATCH geometry returns 422 for polygon with area < 20 m²",
+        "Test: POST /review/complete returns 400 when any hole has needs_review = true AND confirmed = false, and the course status is unchanged",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Tests — hard delete preserves corrections row",
+      "description": "As a developer, I want proof that the corrections audit trail survives a polygon delete.",
+      "acceptanceCriteria": [
+        "Test: DELETE /api/features/[featureId] removes the feature row (SELECT returns nothing)",
+        "Test: the corresponding corrections row with correction_type = 'polygon_delete' remains, with geometry, feature_type, hole_id, and assignment_confidence snapshots populated",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "API route tests — org isolation across all correction endpoints",
+      "description": "As a developer, I want all correction routes covered by org-isolation tests so cross-org data access is impossible.",
+      "acceptanceCriteria": [
+        "For each correction endpoint (PATCH hole, PATCH type, PATCH geometry, DELETE feature, POST confirm, POST review/complete, GET corrections): a test verifies that a user in org A cannot read or mutate a feature/course owned by org B (404 or 403)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Component tests — HoleList, Inspector, CorrectionActions",
+      "description": "As a developer, I want component tests for the review UI so rendering logic is covered.",
+      "acceptanceCriteria": [
+        "HoleList test: flagged holes sort by assignment_confidence ASC at top; confirmed holes below by hole number; progress counter matches confirmed/total",
+        "Inspector test: renders hole view vs polygon view based on selection; dropdown options populate correctly",
+        "CorrectionActions test: Apply is disabled until a change is staged; Cancel reverts; error state renders on mocked non-2xx",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-021",
+      "title": "Sentry wired into the Next.js app",
+      "description": "As an operator, I want production errors captured in Sentry so I can diagnose issues without user reports.",
+      "acceptanceCriteria": [
+        "@sentry/nextjs installed and configured with sentry.client.config.ts + sentry.server.config.ts + sentry.edge.config.ts using SENTRY_DSN env var",
+        "next.config.mjs wraps with withSentryConfig",
+        "DSN absence does not crash local dev (only initialises when SENTRY_DSN is set)",
+        "A deliberately thrown error from an API route is captured (verifiable by checking captureException is called — unit test with mocked Sentry)",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-022",
+      "title": "deploy.yml smoke tests",
+      "description": "As an operator, I want post-deploy smoke checks so a broken deploy is caught before users hit it.",
+      "acceptanceCriteria": [
+        ".github/workflows/deploy.yml runs after Vercel deploy: curl GET $STAGING_URL/api/health expecting 200",
+        "curl -o /dev/null -w '%{http_code}' GET $STAGING_URL/dashboard/courses expecting 307 or 302 (unauth redirect to /login)",
+        "Workflow fails if either smoke check fails",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-023",
+      "title": "Performance validation script",
+      "description": "As an operator, I want a script that measures the NFR targets so we know whether the MVP meets them before cutover.",
+      "acceptanceCriteria": [
+        "scripts/perf-check.ts (ts-node runnable) that exercises: course library page render, GET /api/courses/[id]/features/geojson latency, correction save round-trip (PATCH hole), and outputs a pass/fail table against the NFR targets in ROADMAP.md (library < 1.5s, map render < 2s, correction < 500ms)",
+        "Script is runnable via npm run perf:check and documented in README.md",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

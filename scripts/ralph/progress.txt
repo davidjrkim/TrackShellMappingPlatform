@@ -1,0 +1,29 @@
+# Ralph Progress Log
+Started: Fri Apr 24 13:38:28 KST 2026
+---
+
+## Codebase Patterns
+- Route handlers follow `getServerSession(authOptions)` → 401, UUID regex check → 404, org isolation via `session.user.orgId` joined to `courses.org_id`. See `app/api/courses/[id]/route.ts` for canonical shape.
+- Raw SQL PostGIS helpers live in `lib/spatial.ts`; non-geometry mutation helpers (correction flow) live in `lib/corrections.ts`. Route handlers must not embed raw SQL directly — call a helper.
+- Correction mutations MUST use `db.$transaction([...])` with `$executeRaw` statements so the corrections insert and the features/holes mutation roll back together. Correction row first, mutation second, per PRD 2b.
+- The corrections table stores hole NUMBERS (`original_hole_number` / `corrected_hole_number` smallints), not hole ids. Resolve the hole_number from the hole row before writing the snapshot.
+- Lock enforcement for mutation endpoints: read `courses.locked_by` + `locked_at` via `getFeatureForMutation` and gate with `isLockedByOther` (respects the 2h TTL from `LOCK_TTL_MS` in `lib/review.ts`). Do NOT call `acquireLock` — that belongs to the explicit POST /lock endpoint.
+- Path params for nested dynamic routes arrive as `{ params: { featureId: string } }`. Validate with `UUID_RE` before touching the DB.
+- Prisma client type `@prisma/client` exposes `FeatureType` enum string literals (`'green' | 'fairway' | 'tee_box' | 'bunker' | 'water_hazard'`) for type-change endpoints.
+
+---
+
+## 2026-04-24 - US-001
+- Implemented PATCH /api/features/[featureId]/hole — reassign hole.
+- Files changed:
+  - `lib/corrections.ts` (new) — `getFeatureForMutation`, `getHoleRef`, `isLockedByOther`.
+  - `app/api/features/[featureId]/hole/route.ts` (new) — PATCH handler.
+  - `prd.json` — marked US-001 passes:true.
+- Quality: `npx tsc --noEmit` clean; `npx next lint --dir app --dir lib` clean.
+- **Learnings for future iterations:**
+  - `courses.locked_by` + `locked_at` live on the course row — the single-reviewer lock from Week 5. Every US-002..US-006 mutation must gate on `isLockedByOther`.
+  - `corrections.original_hole_number` / `corrected_hole_number` are `smallint` — pass the resolved hole number, not the UUID. AC wording "old_hole_id/new_hole_id" refers conceptually; the schema uses numbers.
+  - `db.$transaction([exec1, exec2])` (array form) gives sequential atomic execution — simpler than the interactive callback form and sufficient when each statement needs no return value.
+  - `getFeatureForMutation` already joins `features -> courses -> holes (left)`, so the org-isolation + current-hole-number check is a single query. Reuse it across US-002 (type), US-003 (geometry), US-004 (delete).
+  - Path params in Next 14 App Router: `{ params: { featureId: string } }` — note the route directory is `[featureId]`, not `[id]`.
+---
