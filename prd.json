@@ -65,8 +65,8 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/route.ts DELETE. Reuses getFeatureForMutation (org isolation + 404) and isLockedByOther (409). Atomic $transaction: INSERT corrections ('polygon_delete') via INSERT ... SELECT from features LEFT JOIN holes — snapshots geometry into original_geometry, feature_type into original_feature_type, hole_number into original_hole_number, and confidence_score into notes as JSON (schema has no dedicated column). Then DELETE FROM features. corrections.feature_id has ON DELETE SET NULL so the audit row survives. Returns 204 No Content."
     },
     {
       "id": "US-005",
