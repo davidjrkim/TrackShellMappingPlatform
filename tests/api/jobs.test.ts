@@ -11,7 +11,7 @@ jest.mock('next-auth', () => ({ getServerSession: jest.fn() }))
 import { getServerSession } from 'next-auth'
 const mockSession = getServerSession as jest.MockedFunction<typeof getServerSession>
 
-jest.mock('@/lib/pipeline', () => ({
+jest.mock('../../lib/pipeline', () => ({
   triggerPipelineJob: jest.fn(async () => ({ ok: true, pipelineJobId: 'test-pipeline-id' })),
   cancelPipelineJob: jest.fn(async () => ({ ok: true })),
   openPipelineStream: jest.fn(async () => new Response(null, { status: 502 })),
