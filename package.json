@@ -10,6 +10,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "perf:check": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\"}' ts-node scripts/perf-check.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "npx prisma db seed",
@@ -20,7 +21,9 @@
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
   },
   "dependencies": {
+    "@mapbox/mapbox-gl-draw": "^1.5.1",
     "@prisma/client": "^5.22.0",
+    "@sentry/nextjs": "^10.50.0",
     "bcryptjs": "^2.4.3",
     "ioredis": "^5.4.1",
     "maplibre-gl": "^4.7.1",

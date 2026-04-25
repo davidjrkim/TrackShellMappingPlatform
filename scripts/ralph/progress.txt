@@ -1,0 +1,44 @@
+# Ralph Progress Log
+Started: Fri Apr 24 13:38:28 KST 2026
+---
+
+## Codebase Patterns
+- Route handlers follow `getServerSession(authOptions)` → 401, UUID regex check → 404, org isolation via `session.user.orgId` joined to `courses.org_id`. See `app/api/courses/[id]/route.ts` for canonical shape.
+- Raw SQL PostGIS helpers live in `lib/spatial.ts`; non-geometry mutation helpers (correction flow) live in `lib/corrections.ts`. Route handlers must not embed raw SQL directly — call a helper.
+- Correction mutations MUST use `db.$transaction([...])` with `$executeRaw` statements so the corrections insert and the features/holes mutation roll back together. Correction row first, mutation second, per PRD 2b.
+- The corrections table stores hole NUMBERS (`original_hole_number` / `corrected_hole_number` smallints), not hole ids. Resolve the hole_number from the hole row before writing the snapshot.
+- Lock enforcement for mutation endpoints: read `courses.locked_by` + `locked_at` via `getFeatureForMutation` and gate with `isLockedByOther` (respects the 2h TTL from `LOCK_TTL_MS` in `lib/review.ts`). Do NOT call `acquireLock` — that belongs to the explicit POST /lock endpoint.
+- Path params for nested dynamic routes arrive as `{ params: { featureId: string } }`. Validate with `UUID_RE` before touching the DB.
+- Prisma client type `@prisma/client` exposes `FeatureType` enum string literals (`'green' | 'fairway' | 'tee_box' | 'bunker' | 'water_hazard'`) for type-change endpoints.
+- Enum bindings in `$executeRaw` must be cast explicitly: `${value}::feature_type_enum`. The `@@map` in schema.prisma names the DB type `feature_type_enum` (not `feature_type`).
+
+---
+
+## 2026-04-24 - US-001
+- Implemented PATCH /api/features/[featureId]/hole — reassign hole.
+- Files changed:
+  - `lib/corrections.ts` (new) — `getFeatureForMutation`, `getHoleRef`, `isLockedByOther`.
+  - `app/api/features/[featureId]/hole/route.ts` (new) — PATCH handler.
+  - `prd.json` — marked US-001 passes:true.
+- Quality: `npx tsc --noEmit` clean; `npx next lint --dir app --dir lib` clean.
+- **Learnings for future iterations:**
+  - `courses.locked_by` + `locked_at` live on the course row — the single-reviewer lock from Week 5. Every US-002..US-006 mutation must gate on `isLockedByOther`.
+  - `corrections.original_hole_number` / `corrected_hole_number` are `smallint` — pass the resolved hole number, not the UUID. AC wording "old_hole_id/new_hole_id" refers conceptually; the schema uses numbers.
+  - `db.$transaction([exec1, exec2])` (array form) gives sequential atomic execution — simpler than the interactive callback form and sufficient when each statement needs no return value.
+  - `getFeatureForMutation` already joins `features -> courses -> holes (left)`, so the org-isolation + current-hole-number check is a single query. Reuse it across US-002 (type), US-003 (geometry), US-004 (delete).
+  - Path params in Next 14 App Router: `{ params: { featureId: string } }` — note the route directory is `[featureId]`, not `[id]`.
+---
+
+## 2026-04-24 - US-002
+- Implemented PATCH /api/features/[featureId]/type — change feature type.
+- Files changed:
+  - `app/api/features/[featureId]/type/route.ts` (new) — PATCH handler.
+  - `prd.json` — marked US-002 passes:true.
+- Quality: `npx tsc --noEmit` clean; `npx next lint --dir app --dir lib` clean.
+- **Learnings for future iterations:**
+  - Reused `getFeatureForMutation` + `isLockedByOther` unchanged — these helpers are already shaped for all features/[featureId]/* correction endpoints. Expect US-003 (geometry) and US-004 (delete) to follow the same preflight pattern.
+  - Validated `featureType` against `Object.values(FeatureType)` from `@prisma/client` — that array round-trips to the raw SQL enum cast. Don't hardcode the list.
+  - PostgreSQL enum type name is `feature_type_enum` (the `@@map` target in `schema.prisma`). The Prisma model field is `feature_type`, but the TYPE cast in raw SQL must use the enum type name — easy foot-gun.
+  - Added an "unchanged" 422 guard so the corrections audit trail doesn't get noise rows when the reviewer re-submits the same value.
+  - `FeatureType` enum is emitted by Prisma generate — it's `Object.values(FeatureType)` (string literal values), not `Object.keys`.
+---

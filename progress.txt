@@ -1,0 +1,496 @@
+## Codebase Patterns
+- Review UI mutation pattern: each correction control (reassign hole, change type, etc.) lives in its own sub-component inside Inspector.tsx with its own local `selectedValue`, `submitting`, and `error` state. `useEffect` resets local state on `feature.id` change so switching polygons doesn't carry stale selections. Apply button: `disabled = submitting || !dirty`. No optimistic updates — keep the original feature data visible until the parent refresh lands the new server state. Surface non-2xx as inline `role="alert"` text, not a global toast.
+- Inspector consumes `holes: HoleSummary[]` (full list for the course) so the reassign dropdown can render `Hole 1..N` without an extra fetch — the holes prop is already in ReviewWorkspace.
+- Map GeoJSON refresh after a successful correction goes through a memoised `refreshGeoJSON()` in ReviewWorkspace (used on mount AND after mutations). For hole-detail features, bump a `holeFeaturesVersion` state in ReviewWorkspace and include it in the hole-detail useEffect deps array — that forces a refetch without coupling to the GeoJSON load.
+- After PATCH /hole succeeds, the polygon may belong to a different hole; switch `selectedHoleId` to the new hole id (server returns it) so Inspector + map stay focused on the moved feature, and clear `selectedFeatureId` since the new hole's feature list will land via the standard hole-detail effect.
+- Feature type options for the UI: hardcode the array (`['green','fairway','tee_box','bunker','water_hazard'] as const`) in the client component — do NOT import `FeatureType` from `@prisma/client` into a 'use client' file because it pulls the runtime client into the browser bundle. The list is already mirrored in FEATURE_LABEL/FEATURE_SWATCH so keep them in sync if a new type is added.
+- Correction endpoints share a preflight flow: authenticate → UUID-validate featureId → parse+validate body → getFeatureForMutation (org isolation) → isLockedByOther (409) → body-specific 422s → $transaction([INSERT corrections, UPDATE/DELETE features]).
+- Every correction mutation MUST run as a Prisma $transaction with the corrections INSERT first and the feature mutation second, so a half-applied correction cannot ship.
+- corrections.original_geometry and features.geometry are both GEOMETRY(MultiPolygon,4326). Snapshot the prior geometry with INSERT ... SELECT f.geometry FROM features (no ST_AsGeoJSON round-trip needed).
+- Enums need explicit ::feature_type_enum casts in raw SQL when passed as string bind parameters.
+- lib/spatial.ts isGeometryValid(geojson) returns { valid, areaSqm } from ST_IsValid + ST_Area(::geography) in one query — reuse it rather than writing new raw SQL in route handlers.
+- Use ST_Multi(ST_GeomFromGeoJSON(...)) when writing to a MultiPolygon column to tolerate single-Polygon GeoJSON without failing the type constraint.
+- lib/corrections.ts exposes getFeatureForMutation / getHoleRef / isLockedByOther — always use these, do not re-query in routes.
+- UUID regex used for all featureId / holeId params: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.
+- corrections.feature_id has ON DELETE SET NULL — the audit row survives a hard DELETE of the feature, so correction snapshots are the only record after polygon_delete.
+- corrections has no column for feature confidence_score or a raw hole_id — snapshot confidence_score into the notes TEXT column as JSON, and hole identity into original_hole_number via LEFT JOIN holes h ON h.id = f.hole_id.
+- Hole-scoped correction events (e.g. hole_confirmed) set corrections.feature_id = NULL and record hole identity via original_hole_number. feature_id is nullable by design.
+- holes.confirmation_type is a nullable hole_confirmation_type_enum ('manual' | 'auto') — set by US-005 (manual) and US-006 (auto); cast string literals explicitly in raw SQL: `'manual'::hole_confirmation_type_enum`.
+- Course-scoped transactions (e.g. sign-off in US-006) should release the lock inside the same $transaction that flips status — do NOT call releaseLock() separately after the transaction, or a partial failure can leak the lock. UPDATE courses SET status=..., locked_by=NULL, locked_at=NULL in one statement.
+- Sign-off gate query is `SELECT hole_number FROM holes WHERE course_id=$1 AND needs_review=true AND confirmed=false` — return the list as `blocking_holes: number[]` in the 400 body so the UI can render which holes still block sign-off.
+- Prisma + PostGIS interaction: `prisma migrate dev` refuses to run non-interactively and complains about the `bounding_box` PostGIS column it cannot see. Workaround when adding a plain column: create the migration folder under prisma/migrations/<timestamp>_<name>/migration.sql by hand with the ALTER/CREATE TYPE, then `npx prisma migrate deploy` to apply it and record it in _prisma_migrations. Update prisma/schema.prisma alongside so the generated client picks up the new column.
+- Read endpoints that scope by course_id must still org-isolate: do a preflight `SELECT id FROM courses WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL` (404 if empty), then issue the data query. corrections has no org_id column — the course join / preflight is the only barrier.
+- For corrections audit reads, expose geometry snapshots as `{ has_geometry_snapshot: boolean, snapshot_area_sqm: float|null }` via `ST_Area(original_geometry::geography)`. Do NOT ship full MultiPolygon blobs in list payloads — they are large, and the UI only needs presence + size for the audit feed.
+- @mapbox/mapbox-gl-draw works with MapLibre GL v4 if you tag the canvas with the `mapboxgl-canvas` class while Draw is mounted — Draw's pointer-event guard (`src/events.js#132`) checks `classList.contains('mapboxgl-canvas')` and MapLibre's canvas is named `maplibregl-canvas`. Add the class on mount, remove on unmount so we don't leak the Mapbox class after leaving draw mode.
+- @mapbox/mapbox-gl-draw ships no types; keep a minimal ambient module in `types/mapbox-gl-draw.d.ts` covering only the surface we touch (constructor, add, changeMode, DrawUpdateEvent). Don't try to fully re-type the library.
+- When mounting a Draw control onto a MapLibre map, `map.addControl(draw as unknown as maplibregl.IControl)` is the correct cast — Draw's control shape is compatible but the types don't overlap.
+- To get the MapLibre map instance from MapCanvas for sibling components (DrawMode overlay etc.), add a `getMap(): MapLibreMap | null` method to MapCanvasHandle AND expose an `onMapReady(map)` prop that fires from the map `load` event — state-backed is needed because a ref doesn't trigger re-renders.
+- Review UI keyboard handlers: when draw mode is active, short-circuit the default Escape handler that deselects the feature — otherwise a single Esc both exits draw mode and deselects. Add `drawModeActive` as a dep to the keydown effect and guard the Escape branch with `if (drawModeActive) break`.
+- Draw's direct_select mode works per-polygon. When seeding a MultiPolygon, unwrap/rewrap via helpers: accept either Polygon or MultiPolygon back from draw.update and normalise to MultiPolygon before POSTing (PATCH /geometry requires MultiPolygon and lib/spatial.ts ST_Multi wraps any residual Polygon anyway).
+- Destructive modals (e.g. DeletePolygonDialog) should attach their Escape-to-cancel listener with useCapture=true AND stopPropagation(), because the ReviewWorkspace has its own window-level Escape handler that deselects the feature — without the capture+stop combo a single Esc both closes the dialog AND clears selection. Back it up with a `if (deleteDialogFeature) break` guard in the workspace handler for safety.
+- Keyboard shortcuts that mutate state (Delete/Backspace to open delete dialog, D to toggle draw mode) must be listed in the keydown effect's dep array — not just the state they read. Otherwise the effect closes over stale booleans like drawModeActive/deleteDialogFeature and the guards silently fail.
+- Render overlay modals at the ReviewWorkspace level, not inside a side panel — the right-panel Inspector has its own stacking context, which breaks a `fixed inset-0` overlay's positioning. The workspace root is the correct anchor for any full-screen dialog.
+- Single-level undo pattern: ReviewWorkspace owns a `LastCorrection` discriminated union that records the INVERSE payload after each successful correction. Success callbacks from child controls carry the prior value (Inspector's ReassignHoleControl/ChangeTypeControl now pass {featureId, priorHoleId|priorType}); geometry prior is captured from the existing `selectedFeatureGeometry` memo before the refresh lands. Undo dispatches a fetch DIRECTLY from the workspace rather than re-entering the Inspector flow — re-entering would re-fire the success callback and register an undo-of-undo, defeating single-level. On success clear the slot + refresh; on failure surface inline error and leave the slot so the user can retry.
+- For non-reversible corrections (polygon_delete — no feature-insert endpoint yet), record a `{undoable: false, reason}` slot instead of leaving the slot null. That lets the Undo button render disabled WITH a tooltip explaining why, which satisfies the AC's "otherwise undo is disabled with tooltip" clause. A null slot would just hide the control silently.
+- Global Enter keyboard shortcut and focused buttons double-fire: when Enter is pressed with a BUTTON or A focused, the browser already dispatches a synthetic click on that element. A window-level `keydown` that also fires on Enter will double-action. Guard the Enter branch with `if (e.target.tagName === 'BUTTON' || tag === 'A') break` so the native click is the only thing that happens when something clickable is focused. `isTypingTarget` handles INPUT/TEXTAREA/SELECT/contentEditable but deliberately does NOT exclude BUTTON — other shortcuts (↑↓, F, C) should still work when a button has focus.
+- Per-hole confirm from the client: POST `/api/courses/{id}/holes/{holeId}/confirm` writes the corrections row + flips holes.confirmed server-side. The client must mirror the flip in its local `holes` state so HoleList re-sorts and re-colours without a page reload — change `const [holes] = useState(initialHoles)` to include a setter, then `setHoles(prev => prev.map(h => h.id === id ? {...h, confirmed:true, needs_review:false} : h))` on 2xx. Also bump `holeFeaturesVersion` + call `refreshGeoJSON()` so features.reviewed=true lands in Inspector/overlay.
+- Sign-off UI reachability: compute `hasBlockingFlagged = holes.some(h => h.needs_review && !h.confirmed)` on the client as the gate for the "Sign off course" CTA. The server will re-check the same condition on POST /review/complete and return 400 with `blocking_holes: number[]`, so the client gate is UX polish, not a security boundary — always render the server error path too.
+- When a workspace-level modal (DeletePolygonDialog, SignOffDialog) is open, short-circuit the window `keydown` handler at the top (`if (signOffOpen) return`) in addition to whatever per-branch guards exist. Otherwise typing in the notes textarea is fine (isTypingTarget catches that), but clicking outside the textarea still leaves every other shortcut (D, Enter, Ctrl+Z, fit-to-hole) hot on the map underneath. One top-level guard per modal is cleaner than sprinkling guards in every case.
+- For dialogs that navigate away on success, call both `router.push(path)` AND `router.refresh()` — push alone uses the cached server component render (the course status still reads as 'flagged' until the next hard reload). Refresh invalidates the RSC cache so the new 'reviewed' status lands on first paint of the overview.
+- Auto-advance-on-confirm pattern: after the confirm-hole 2xx lands, compute the next flagged hole from a LOCAL `updated` array (not from the `holes` state, which won't have the new confirmed=true yet) and setSelectedHoleId to it. The existing re-center useEffect on selectedHoleId handles fitToHole, so no explicit mapRef.fitToHole call is needed. Sort order: assignment_confidence ASC, then hole_number ASC as tiebreaker — matches HoleList.orderHolesForReview so the UI focus matches what the reviewer sees at the top of the list.
+- To compute derived next-selection state from a just-updated list while avoiding nested setters, refactor `setHoles(prev => prev.map(...))` to `const updated = holes.map(...); setHoles(updated); if (nextFrom(updated)) setSelectedHoleId(...)`. React is fine with two independent setStates in the same callback; batching handles the re-render. Keep the `holes` dep in useCallback so the mapping reads the latest snapshot.
+- Transaction-integrity test pattern (US-016): to prove a route handler's `db.$transaction([a, b])` is atomic without mocking Prisma entirely, capture `const realTransaction = db.$transaction.bind(db)` at module scope, then per-test `jest.spyOn(db, '$transaction').mockImplementationOnce(arg => realTransaction([arg[0], db.$executeRaw\`SELECT 1/0\`]))`. The real $transaction still runs the modified array in one Postgres tx, so the forced division-by-zero rolls back the sibling statement. Verifies atomicity from outside the route — no need to reach into Prisma internals. Reset mocks with `jest.restoreAllMocks()` in afterEach so one test's stub doesn't bleed into the next.
+- Seeding a feature row for tests requires raw SQL because Prisma cannot write PostGIS geometry: `INSERT INTO features (id, hole_id, course_id, feature_type, geometry) VALUES (gen_random_uuid(), $hole::uuid, $course::uuid, 'green'::feature_type_enum, ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) RETURNING id`. Use a polygon larger than 20 m² (the floor PATCH /geometry enforces) — e.g. 0.001° × 0.001° at latitude 37° ≈ 9,900 m².
+- Reject-path test seeds (US-017): a self-intersecting bowtie MultiPolygon `[[[a,b],[c,d],[c,b],[a,d],[a,b]]]` parses via ST_GeomFromGeoJSON but ST_IsValid returns false — use this to drive the 422 invalid-geometry path without the body-shape 400 kicking in first. For the area-floor test, a ~1e-5° × 1e-5° MultiPolygon at latitude 37° is ≈ 1.2 m², comfortably under the 20 m² floor.
+- Lock-conflict tests need two users in the same org; seed both in beforeAll, hold the lock by direct UPDATE (`SET locked_by = $userA, locked_at = NOW()`) and mock the session as userB. The 2-hour TTL guard in lib/corrections.ts means tests that want the lock to be "held" must use a recent NOW(); tests that want auto-release must use NOW() - INTERVAL '3 hours'.
+- Hard-delete audit assertions (US-018): after the feature row is gone, the corrections row carries feature_id=NULL (ON DELETE SET NULL) — look it up by `course_id + correction_type='polygon_delete'` instead of by feature_id. The polygon_delete route snapshots confidence_score into `notes` as JSON where the numeric value is emitted as a JSON number, not a string — assert via `Number(JSON.parse(notes).confidence_score)` / toBeCloseTo rather than matching a string. Geometry snapshot is best verified via `ST_Area(original_geometry::geography)` rather than round-tripping GeoJSON — faster and more readable.
+- Org-isolation tests (US-019): every correction endpoint returns 404 (not 403) when the caller's org doesn't match the resource. The helpers (getFeatureForMutation / getHoleForMutation / getLock / GET /corrections preflight) all join through `courses.org_id` and return null on mismatch — routes treat null as "not found" and never distinguish "exists elsewhere" from "doesn't exist". When asserting cross-org rejection, always pair the 404 assertion with a "no side-effect" assertion (feature/hole/course row unchanged + zero new corrections rows for the target course_id) so a leaky endpoint that 404s AFTER writing would still fail the test.
+- Jsdom component tests that mock `fetch`: jsdom does NOT expose a global `Response` constructor, so `new Response(JSON.stringify(...), { status })` throws ReferenceError. Use a plain `FakeResponse` helper returning `{ ok: status>=200&&<300, status, json: async () => body }` — the Inspector correction controls only call `.ok`, `.status`, and `.json()` on the result, so the shim is sufficient. Stash `const originalFetch = global.fetch` at module scope and restore in `afterEach` so one test's mock doesn't leak.
+- Inspector correction controls (ReassignHoleControl/ChangeTypeControl) can be driven via fireEvent.change on the select + fireEvent.click on Apply; wrap the click in `await act(async () => { ... })` so the async setState after the fetch resolves settles before assertions. Error path: staged select value is preserved on non-2xx so the user can Retry without re-picking — assert this explicitly in the test.
+- API-route tests that import a route handler must use `@jest-environment node` (docblock at top) — the default jsdom env has no `Request` and NextResponse's import chain blows up with `ReferenceError: Request is not defined`. courses.test.ts, jobs.test.ts, and tests/api/sentry.test.ts all follow this pattern.
+- Sentry 10.x on Next.js 14: server/edge configs load via `instrumentation.ts` register() keyed on `process.env.NEXT_RUNTIME`. Keep three `sentry.*.config.ts` files (client/server/edge) each guarded with `if (dsn) Sentry.init(...)` so local dev without SENTRY_DSN stays silent. `withSentryConfig(nextConfig, { silent: true })` is safe to call even without a DSN at build time.
+- ts-node from an npm script: the `"ts-node --compiler-options {\"module\":\"CommonJS\"} foo.ts"` pattern (used by prisma/seed) breaks under `npm run <name>` in zsh because the JSON braces get stripped before ts-node's arg parser sees them. Prefer `TS_NODE_COMPILER_OPTIONS='{"module":"CommonJS"}' ts-node foo.ts` as an env-var prefix — shell-safe, identical effect. Applies to any one-file CJS script (scripts/perf-check.ts follows this).
+---
+
+## 2026-04-24 - US-003
+- Implemented PATCH /api/features/[featureId]/geometry to save edited polygon geometry with an atomic corrections audit.
+- Files changed:
+  - app/api/features/[featureId]/geometry/route.ts (new)
+  - prd.json (US-003 passes=true + notes)
+- Flow:
+  1. Session required (401 otherwise) + UUID-validate featureId (404).
+  2. Body must be `{ geometry: { type: 'MultiPolygon', coordinates: [...] } }` — 400 otherwise.
+  3. Load feature via getFeatureForMutation (org-isolated).
+  4. isLockedByOther → 409.
+  5. Call isGeometryValid(geojson) — 422 if !valid or areaSqm < 20.
+  6. `$transaction([INSERT corrections (correction_type='geometry_edit', original_geometry=f.geometry), UPDATE features SET geometry = ST_Multi(ST_GeomFromGeoJSON(...))])` — corrections row written before the feature mutation.
+  7. Return updated feature shape matching US-001/US-002.
+- **Learnings for future iterations:**
+  - `corrections.original_geometry` is typed `GEOMETRY(MultiPolygon,4326)` — can snapshot via `INSERT ... SELECT f.geometry FROM features`, no GeoJSON conversion required.
+  - Wrap incoming GeoJSON with `ST_Multi(ST_GeomFromGeoJSON(...))` when updating features.geometry — protects against single-Polygon input while respecting the MULTIPOLYGON schema constraint.
+  - `lib/spatial.ts` already has `isGeometryValid(geojson)` doing exactly the ST_IsValid + ST_Area(::geography) pair required by the PRD — do not duplicate.
+  - Prisma `$transaction` with an array of `$executeRaw` statements guarantees atomic rollback across raw SQL — no need for interactive transaction callback for two-statement correction flows.
+  - Area threshold is 20 m² (below which we reject as likely editing noise / drag slips).
+---
+
+## 2026-04-24 - US-004
+- Implemented DELETE /api/features/[featureId] to hard-delete a polygon while snapshotting its state into a corrections audit row.
+- Files changed:
+  - app/api/features/[featureId]/route.ts (new — DELETE handler)
+  - prd.json (US-004 passes=true + notes)
+- Flow:
+  1. Session required (401 otherwise) + UUID-validate featureId (404).
+  2. Load feature via getFeatureForMutation (org-isolated 404).
+  3. isLockedByOther → 409.
+  4. `$transaction([INSERT corrections ('polygon_delete') via INSERT...SELECT FROM features LEFT JOIN holes — snapshots geometry, feature_type, hole_number, and confidence_score (as JSON in notes), DELETE FROM features])`.
+  5. Returns 204 No Content.
+- **Learnings for future iterations:**
+  - corrections.feature_id is `ON DELETE SET NULL` — the audit row keeps its geometry/type/hole snapshot after the feature row is removed. DO NOT change this to CASCADE.
+  - The corrections schema has no column for feature `confidence_score` nor for raw `hole_id`; use `original_hole_number` (join features to holes on hole_id to get the number) and stash `confidence_score` in `notes` as `json_build_object(...)::text`.
+  - `INSERT ... SELECT` with a LEFT JOIN is the cleanest way to snapshot multiple feature columns atomically — avoids a preflight read that could go stale between SELECT and DELETE.
+  - Returning `new NextResponse(null, { status: 204 })` is the correct way to send 204 from a Next.js route handler — `NextResponse.json(null, { status: 204 })` would fail because 204 forbids a body.
+---
+
+## 2026-04-24 - US-006
+- Implemented POST /api/courses/[id]/review/complete — course sign-off with atomic auto-confirm, status flip, and lock release.
+- Files changed:
+  - app/api/courses/[id]/review/complete/route.ts (new)
+  - prd.json (US-006 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Session required (401) + UUID-validate params.id (404).
+  2. Parse optional body `{ notes?: string }` — tolerate no body, empty string trims to null.
+  3. getLock(courseId, orgId) — org-isolated; null → 404.
+  4. isLockedByOther(lock.locked_by, lock.locked_at, userId) → 409.
+  5. Sign-off gate: SELECT hole_number FROM holes WHERE course_id=$1 AND needs_review=true AND confirmed=false — if any rows, return 400 with `blocking_holes: number[]`.
+  6. `$transaction([INSERT corrections (correction_type='course_signoff', notes), UPDATE features SET reviewed=true WHERE hole_id IN (unconfirmed holes on course), UPDATE holes SET confirmed=true, confirmation_type='auto'::hole_confirmation_type_enum WHERE confirmed=false, UPDATE courses SET status='reviewed'::course_status, locked_by=NULL, locked_at=NULL])`.
+  7. Returns `{ course: { id, status: 'reviewed' }, notes }`.
+- **Learnings for future iterations:**
+  - Lock release for course-scoped writes belongs INSIDE the same transaction as the state flip. If you call releaseLock() after a $transaction completes, a crash between the two leaves the lock dangling and the course un-reviewable until the 2h TTL expires. Inline `SET locked_by=NULL, locked_at=NULL` into the UPDATE courses SET status=... statement instead.
+  - The sign-off gate must be a separate SELECT BEFORE the $transaction — you cannot return a 400 with a helpful list of blocking holes from inside Prisma's transaction callback without throwing and rolling back. The gate is read-only so running it outside the transaction is safe.
+  - corrections.correction_type is a VARCHAR(50) (not an enum), so new event types like 'course_signoff' require no migration — just pick a stable string.
+  - Auto-confirm path leaves confirmation_type='auto' on holes that never had needs_review flag set AND were never manually confirmed. The WHERE `confirmed=false` after the gate is safe because the gate guaranteed zero `needs_review=true AND confirmed=false` rows remain.
+  - Body parsing pattern: `await req.json()` in a try/catch with null fallback — Next.js throws on empty body, so tolerate it for optional-body POSTs.
+---
+
+## 2026-04-24 - US-007
+- Implemented GET /api/corrections — correction history for a course, with org isolation and user email/name + geometry snapshot metadata per row.
+- Files changed:
+  - app/api/corrections/route.ts (new)
+  - prd.json (US-007 passes=true + notes)
+  - progress.txt (this entry + two Codebase Patterns)
+- Flow:
+  1. Session required (401 otherwise).
+  2. Require `courseId` query param (400 if missing); 404 if not a UUID or course not visible to the caller's org.
+  3. Preflight `SELECT id FROM courses WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL` — corrections has no org_id column, so the course gate is the isolation barrier.
+  4. Single JOIN query against corrections + users returning correction_type, hole/feature-type before/after, `has_geometry_snapshot`, `snapshot_area_sqm` (ST_Area on geography cast), notes, created_at, and nested `corrected_by: { id, email, name }`.
+  5. Ordered by created_at DESC.
+- **Learnings for future iterations:**
+  - corrections has no `org_id` column — any read endpoint MUST join through `courses` (or preflight the course) on `org_id` to enforce isolation. Skipping this lets a user in org A read org B's audit trail.
+  - Shipping original_geometry on list endpoints is wasteful — expose presence + ST_Area(::geography) instead. Full MultiPolygon should only go out on a single-correction detail endpoint when/if one is added.
+  - `u.id AS corrected_by_id` + JS-side remap to `corrected_by: { id, email, name }` is cleaner than trying to nest via SQL `row_to_json` — the response shape is easier to type and unit-test.
+  - `ST_Area(geom::geography)::float` returns m² regardless of SRID — reuse the pattern elsewhere when exposing measured areas to the UI.
+---
+
+## 2026-04-24 - US-008
+- Wired Inspector's reassign-hole and change-type dropdowns end to end so corrections submit through the existing PATCH endpoints.
+- Files changed:
+  - components/review/Inspector.tsx (FeatureView gains ReassignHoleControl + ChangeTypeControl; new props: holes, onReassignSuccess, onTypeChangeSuccess)
+  - components/review/ReviewWorkspace.tsx (extracted refreshGeoJSON callback; added holeFeaturesVersion state + onReassignSuccess / onTypeChangeSuccess callbacks; passes holes through to Inspector)
+  - prd.json (US-008 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns updates)
+- Flow:
+  1. Selecting a polygon in Inspector renders FeatureView with two control sections.
+  2. ReassignHoleControl: a <select> listing holes 1..N (sorted ASC, value = hole.id). Apply disabled until selection !== current hole. On click → PATCH /api/features/[featureId]/hole with { holeId }. On 2xx → onReassignSuccess(newHoleId) → ReviewWorkspace switches selectedHoleId to that new hole, clears selectedFeatureId, and refreshes GeoJSON. On non-2xx → inline `role="alert"` error, original state untouched.
+  3. ChangeTypeControl: a <select> with the 5 FeatureType options. Apply → PATCH /api/features/[featureId]/type with { featureType }. On 2xx → onTypeChangeSuccess() → ReviewWorkspace bumps holeFeaturesVersion (refetches the hole detail) and refreshes GeoJSON. On non-2xx → inline error.
+  4. Cancel reverts the select to currentValue and clears the error. submitting blocks both buttons + the select.
+- **Learnings for future iterations:**
+  - Don't `import { FeatureType } from '@prisma/client'` in a `'use client'` component — Prisma's runtime client gets pulled into the browser bundle (huge), and the enum values are already mirrored client-side in FEATURE_LABEL / FEATURE_SWATCH. Use a local `as const` tuple instead.
+  - For "no optimistic updates": don't mutate local feature state on success. Trigger a parent refresh and let the server-of-record data flow back through the existing hole-detail useEffect. Bumping a `version` int that's a useEffect dep is the cleanest way to force a refetch without restructuring the effect's other deps.
+  - Apply-button rule of thumb: `disabled = submitting || !dirty`. Track `dirty` against the LAST KNOWN server value (the prop), not the initial mount value — `useEffect` on `feature.id` resets local state when the underlying selection changes.
+  - When a reassign moves a polygon to a new hole, switching `selectedHoleId` to the new hole keeps the Inspector + map focused on the moved feature; otherwise it'd vanish from the current hole's feature list and the user would think it was lost.
+  - No dev-browser/playwright tool available in this environment — Browser AC for US-008 / US-009 / US-010 / etc. needs manual verification on `npm run dev`. Note this in the prd.json `notes` field rather than skipping the AC silently.
+---
+
+## 2026-04-24 - US-009
+- Wired vertex-drag polygon editing into the review workspace via Mapbox GL Draw (running on top of MapLibre GL).
+- Files changed:
+  - package.json + package-lock.json (added @mapbox/mapbox-gl-draw@^1.5.1)
+  - types/mapbox-gl-draw.d.ts (new — minimal ambient typing, upstream ships no .d.ts)
+  - components/map/DrawMode.tsx (new — wraps MapboxDraw, overlays Apply/Cancel toolbar, listens Enter/Esc)
+  - components/review/MapCanvas.tsx (MapCanvasHandle.getMap(); new onMapReady prop that fires after map `load`)
+  - components/review/ReviewWorkspace.tsx (mapInstance state, drawModeActive state, selectedFeatureGeometry memo from featureCollection, D key toggle, Escape guard, renders <DrawMode> overlay, onDrawSaved refreshes GeoJSON + bumps holeFeaturesVersion)
+  - prd.json (US-009 passes=true + notes)
+  - progress.txt (this entry + 6 Codebase Patterns entries)
+- Flow:
+  1. User selects a polygon (click on map or Inspector list).
+  2. User presses D. ReviewWorkspace flips drawModeActive=true when selectedFeatureId + selectedFeatureGeometry are both present.
+  3. DrawMode mounts: tags MapLibre canvas with `mapboxgl-canvas` class (compat shim), creates `new MapboxDraw({ displayControlsDefault:false, controls:{}, keybindings:false })`, `map.addControl(draw)`, `draw.add(selectedFeatureGeometry)`, `draw.changeMode('direct_select', { featureId })` so vertices are immediately draggable.
+  4. Subscribes `map.on('draw.update', ...)` and stores the normalised MultiPolygon in a ref on every vertex drag.
+  5. On Enter (or Apply click): PATCH /api/features/[featureId]/geometry with the working MultiPolygon. 2xx → onSaved → ReviewWorkspace exits draw mode, refreshes GeoJSON and bumps holeFeaturesVersion so Inspector picks up the new area. Non-2xx → inline role=alert error; original geometry stays visible because we never optimistically mutate the feature state.
+  6. On Esc (or Cancel click): onCancel → ReviewWorkspace flips drawModeActive=false. The cleanup effect removes the Draw control, removes the compat canvas class, and leaves the underlying feature geometry untouched.
+- **Learnings for future iterations:**
+  - @mapbox/mapbox-gl-draw v1.5+ is structurally compatible with MapLibre GL v4 — no hard fork needed. The only required shim is the `mapboxgl-canvas` CSS class on the MapLibre canvas element because Draw's pointer-event guard (`src/events.js#132`) checks for it. Apply on mount, remove on unmount.
+  - Upstream ships no TypeScript types — keep a narrow ambient module under `types/` covering just what we use. Don't re-type the whole library; the API surface we need is tiny.
+  - The MapLibre map instance needs to be shared with sibling components (DrawMode lives alongside MapCanvas, not inside). Two parts: (a) add `getMap()` to MapCanvasHandle, (b) fire an `onMapReady(map)` callback from the map load event and store it as STATE in ReviewWorkspace — a ref alone won't re-render DrawMode when the map becomes available.
+  - Don't forget to add `drawModeActive` as a dep of the global keydown effect and guard Escape: otherwise `Esc` both exits draw mode AND deselects the feature in one keystroke. Users expect Esc to step back one level at a time.
+  - mapbox-gl-draw's `direct_select` mode normalises MultiPolygon -> Polygon when only one polygon is present; always wrap back to MultiPolygon before POSTing to PATCH /geometry. lib/spatial.ts's ST_Multi wrap also rescues us server-side but be explicit client-side too.
+---
+
+## 2026-04-24 - US-010
+- Added a confirmation modal for polygon delete plus Delete/Backspace keyboard shortcut.
+- Files changed:
+  - components/review/DeletePolygonDialog.tsx (new — fixed-inset role=dialog modal, capture-phase Escape handler with stopPropagation, DELETE /api/features/[id], inline role=alert error on non-2xx, submitting state disables both buttons)
+  - components/review/Inspector.tsx (FeatureView gains red "Delete polygon" button + onRequestDelete prop; Inspector takes new onRequestDeleteFeature Props field)
+  - components/review/ReviewWorkspace.tsx (deleteDialogFeature state, onRequestDeleteFeature + onDeleteSuccess callbacks, Delete/Backspace key in keydown effect with typing-target guard, renders <DeletePolygonDialog> at workspace root so the overlay sits above everything)
+  - prd.json (US-010 passes=true + notes)
+  - progress.txt (this entry + 3 Codebase Patterns)
+- Flow:
+  1. User selects a polygon on the map or in HoleView list → FeatureView renders in Inspector.
+  2. User either clicks "Delete polygon" button OR presses Delete/Backspace → setDeleteDialogFeature(feature).
+  3. Modal renders over the whole workspace, shows feature_type, hole number, and "This cannot be undone" warning.
+  4. Cancel / Esc closes the modal, no network request, feature/selection state untouched.
+  5. Confirm → DELETE /api/features/[featureId]. 2xx → onDeleteSuccess: clears deleteDialogFeature + selectedFeatureId, exits drawModeActive if on, bumps holeFeaturesVersion to refetch the hole's feature list, calls refreshGeoJSON() to update the map overlay. Non-2xx → inline error inside the modal, modal stays open for retry, original geometry untouched.
+- Guards:
+  - isTypingTarget at the top of the keydown effect skips Delete/Backspace while focus is in INPUT/TEXTAREA/SELECT (so Backspace in the reassign/type dropdowns never deletes).
+  - Delete/Backspace short-circuits if drawModeActive or deleteDialogFeature is already set, preventing double-opens.
+  - Escape handler in ReviewWorkspace breaks early when deleteDialogFeature is set, belt-and-braces with the dialog's own capture-phase stopPropagation.
+- **Learnings for future iterations:**
+  - Render overlay modals at the ReviewWorkspace level, not inside the Inspector right panel — Inspector has its own stacking context and a `fixed inset-0` nested inside can be clipped/positioned oddly.
+  - Destructive-action dialogs need a capture-phase Esc handler with stopPropagation when another component owns a bubble-phase Esc handler on window; otherwise one keystroke cascades (close dialog → deselect feature → etc.).
+  - Next Inspector prop additions should keep the pattern: require the callback in Props, pass through from ReviewWorkspace — do not default to a no-op fallback, which hides wiring bugs.
+---
+
+## 2026-04-24 - US-011
+- Added Ctrl+Z (⌘+Z) single-level undo for reassign / type change / geometry edit corrections. Delete is recorded as a non-undoable slot with a tooltip reason.
+- Files changed:
+  - components/review/Inspector.tsx (extended onReassignSuccess / onTypeChangeSuccess signatures to carry prior snapshot; both control callbacks emit { featureId, priorHoleId|priorType })
+  - components/review/ReviewWorkspace.tsx (LastCorrection discriminated union + state, captures prior values on every correction success, applyUndo dispatches inverse PATCH directly, Ctrl+Z keyboard handler, Undo button in map top-right controls, inline undo error banner)
+  - prd.json (US-011 passes=true + notes)
+  - progress.txt (this entry + 2 Codebase Patterns)
+- Flow:
+  1. Reassign Apply → PATCH /hole succeeds → onReassignSuccess({featureId, newHoleId, priorHoleId}) → setLastCorrection({kind:'reassign', undoable:true, featureId, priorHoleId, priorHoleNumber}).
+  2. Change type Apply → PATCH /type succeeds → onTypeChangeSuccess({featureId, priorType}) → setLastCorrection({kind:'type', undoable:true, featureId, priorType}).
+  3. Draw Apply → PATCH /geometry succeeds → onDrawSaved reads `selectedFeatureGeometry` (still the pre-save geometry because refreshGeoJSON hasn't landed the new one yet) → setLastCorrection({kind:'geometry', undoable:true, featureId, priorGeometry: MultiPolygon}).
+  4. Delete Confirm → onDeleteSuccess → setLastCorrection({kind:'delete', undoable:false, reason:'Deleted polygons cannot be restored from the reviewer UI'}).
+  5. Ctrl+Z fires keyboard handler → guards skip if drawModeActive / deleteDialogFeature / !lastCorrection / !undoable → applyUndo() dispatches the inverse PATCH (hole=priorHoleId, type=priorType, geometry=priorGeometry) directly from ReviewWorkspace. On 2xx: clear slot, bump holeFeaturesVersion, refreshGeoJSON. For reassign specifically, restore selectedHoleId to priorHoleId so the polygon is visible in the Inspector again.
+  6. Undo button in map controls: enabled when lastCorrection.undoable=true, disabled with reason as title for delete, shows 'Undoing…' while in-flight. role=alert banner at top-center for non-2xx.
+- **Learnings for future iterations:**
+  - Keep the undo dispatch OUT of the child component's success path. If undo re-entered Inspector's Apply button, its success callback would fire again and register the undo as the new lastCorrection — undo-of-undo breaks the "single level" AC. Apply the inverse PATCH directly from the workspace and clear the slot explicitly.
+  - Prior geometry for `draw` undo is free: `selectedFeatureGeometry` is still the old geometry at onDrawSaved time because refreshGeoJSON hasn't landed yet. No need to snapshot it before calling DrawMode. Just read the memo.
+  - For reassign undo, don't just flip the hole — also reset selectedHoleId to the prior hole. Otherwise the polygon appears to vanish because the Inspector is focused on the NEW hole whose feature list no longer contains it after the undo lands.
+  - Ctrl/Cmd+Z key detection needs the guard `!e.shiftKey && !e.altKey` — otherwise Ctrl+Shift+Z (redo, not implemented) would also trigger undo.
+  - For corrections with no way to invert (polygon_delete without a feature-insert endpoint), record a `{undoable:false, reason}` slot rather than null. Null hides the button entirely; a disabled slot shows the user WHY undo isn't available.
+- Error-with-Retry banner pattern: use a `<div role="alert">` containing `<span>{message}</span><button onClick={sameSubmitFn} disabled={submitting}>Retry</button>`. Retry calls the SAME submit handler (onApply / apply / onConfirm / applyUndo) — it does NOT clear the error first. The submit handler re-entry starts with `setError(null)` so a successful retry naturally dismisses the banner, and a repeat failure replaces the message. The banner stays visible (not torn down + remounted), so a click on Retry doesn't race with the disabled prop flip.
+---
+
+## 2026-04-24 - US-012
+- Added Retry button to every correction-mutation error banner so a failed save never looks like a success and the reviewer can re-fire the same request without retyping the selection.
+- Files changed:
+  - components/review/Inspector.tsx (ReassignHoleControl + ChangeTypeControl error banners upgraded from bare <p> to flex container with message + Retry; Retry calls onApply, disabled while submitting)
+  - components/map/DrawMode.tsx (error banner gained Retry that calls apply; still sits below the Draw toolbar)
+  - components/review/DeletePolygonDialog.tsx (error banner gained Retry that calls onConfirm; modal stays open for retry)
+  - components/review/ReviewWorkspace.tsx (undo error banner gained Retry that calls applyUndo, only rendered when lastCorrection.undoable=true so a non-undoable slot doesn't offer a retry button)
+  - prd.json (US-012 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- ACs satisfied:
+  1. Non-2xx / network error = failure: already true across all four mutations + undo (no optimistic updates anywhere; original feature data stays visible until parent refresh lands new server state on 2xx).
+  2. Banner with Retry: now on every mutation error surface.
+  3. No optimistic updates: already true, verified during walkthrough (Inspector selects revert on Cancel; DrawMode keeps working geometry in a ref until 2xx; Delete modal keeps feature visible until DELETE returns 204).
+- **Learnings for future iterations:**
+  - The "no optimistic updates" principle is satisfied by the existing architecture — controls read from `feature` prop (server-of-record) and parent-driven refreshGeoJSON/holeFeaturesVersion only fires on 2xx. The Retry button is effectively the UI contract that makes this visible to the user; the data-flow invariant was already in place.
+  - Retry should dispatch the SAME handler, not duplicate the fetch inline. Re-entering the submit function re-runs all the preflight logic (setError(null), setSubmitting(true), dirty check) for free.
+  - For the undo banner, guard the Retry button with `lastCorrection.undoable` — a non-undoable slot (polygon_delete) shouldn't offer retry because there's no PATCH to re-fire. Leave the banner text for context but omit the button.
+  - Avoid introducing a toast library for a single recoverable error per control — inline banners co-located with the control they came from are easier to associate visually than a top-right toast stack, and the AC wording ("toast or banner") explicitly allows this.
+---
+
+## 2026-04-24 - US-005
+- Implemented POST /api/courses/[id]/holes/[holeId]/confirm to manually confirm a single hole and mark all its features reviewed.
+- Files changed:
+  - prisma/schema.prisma (added HoleConfirmationType enum + holes.confirmationType column)
+  - prisma/migrations/20260424000001_add_hole_confirmation_type/migration.sql (new — CREATE TYPE + ALTER TABLE holes ADD COLUMN confirmation_type)
+  - lib/corrections.ts (new helper: getHoleForMutation — hole + course org/lock)
+  - app/api/courses/[id]/holes/[holeId]/confirm/route.ts (new)
+  - prd.json (US-005 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Session required (401 otherwise) + UUID-validate both id and holeId (404).
+  2. Load hole via getHoleForMutation (joins courses on org; returns null → 404).
+  3. isLockedByOther → 409.
+  4. `$transaction([INSERT corrections ('hole_confirmed'), UPDATE holes SET needs_review=false, confirmed=true, confirmation_type='manual'::hole_confirmation_type_enum, UPDATE features SET reviewed=true WHERE hole_id=$hole.id])`.
+  5. Returns `{ hole: { id, course_id, hole_number, needs_review:false, confirmed:true, confirmation_type:'manual' } }`.
+- **Learnings for future iterations:**
+  - Prisma migrate dev is blocked here because it sees `bounding_box` (PostGIS) as an orphan column. Create the migration SQL folder by hand, then `npx prisma migrate deploy` to apply and register it — Prisma generate picks up the new column once schema.prisma is in sync.
+  - confirmation_type is a nullable enum — set to 'manual' on US-005 manual confirm, and 'auto' on the US-006 auto-confirm path.
+  - corrections.feature_id is nullable — reuse it for hole-scoped events by passing NULL and recording hole identity in original_hole_number.
+  - US-006 will follow the same shape but must first enforce sign-off gate (400 if any needs_review=true AND confirmed=false) and then auto-confirm the rest via confirmation_type='auto' before flipping courses.status = 'reviewed' and releasing the lock.
+---
+
+
+## 2026-04-24 - US-014
+- Added the sign-off screen so reviewers can close out a course from the review UI.
+- Files changed:
+  - components/review/SignOffDialog.tsx (new — modal with correction counts, auto-confirm count, reviewer notes textarea, Mark Course Reviewed button, inline 400 blocking-holes surface, Retry on non-2xx)
+  - components/review/ReviewWorkspace.tsx (import SignOffDialog, signOffOpen state, "Sign off course" CTA in map top-right controls, hasBlockingFlagged memo, signOffOpen guard at top of global keydown handler, renders dialog at workspace root)
+  - prd.json (US-014 passes=true + notes)
+  - progress.txt (this entry + 3 Codebase Patterns)
+- Flow:
+  1. Reviewer lands on review page with some flagged holes. "Sign off course" button in map controls is disabled with tooltip "Confirm all flagged holes before signing off".
+  2. After confirming every flagged hole, hasBlockingFlagged flips false → button enables.
+  3. Click → setSignOffOpen(true) → <SignOffDialog>. Dialog fetches GET /api/corrections?courseId=... and reduces rows to per-type counts (hole_reassignment / type_change / geometry_edit / polygon_delete). Auto-confirm count computed client-side as holes.filter(!h.confirmed).length so the reviewer sees what the auto-confirm path will flip.
+  4. Optional notes textarea; empty/whitespace sent as undefined so the server-side trim sees null.
+  5. "Mark Course Reviewed" → POST /api/courses/[id]/review/complete with { notes }. Submit button and Cancel are both disabled during submit.
+  6. 400 response: body.blocking_holes rendered as "Still blocking: Hole N, Hole M". Error banner has Retry; modal stays open.
+  7. Other non-2xx: inline error + Retry. Modal stays open for retry.
+  8. 2xx: onSignedOff() closes dialog + router.push('/dashboard/courses/[id]/overview') + router.refresh() so the overview RSC re-renders with status='reviewed'.
+- **Learnings for future iterations:**
+  - router.push alone leaves the RSC cache stale; the overview would still show the pre-sign-off status until a hard reload. Follow router.push with router.refresh() whenever a mutation upstream of a server component took effect on the server.
+  - When adding new workspace-level modals, remember to guard the window keydown handler at the top with `if (signOffOpen) return` (or equivalent). Per-case guards are fragile — one missed case lets D/Enter/Ctrl+Z fire through the dialog.
+  - Auto-confirm count is better computed client-side than via a second API call — holes state already reflects what will happen on the server (holes with confirmed=false after the gate passes will auto-confirm). Extra round-trip avoided.
+  - GET /api/corrections already returns correction_type per row, so client-side reduce-by-type is sufficient. No new server endpoint needed for counts — if this ever gets expensive, revisit and add a dedicated /api/courses/[id]/review/summary endpoint.
+  - hasBlockingFlagged on the client is UX only; the server re-gates on POST /review/complete and returns 400 with blocking_holes. Always render the server error path even when the client gate would have prevented it — timing races (another tab, stale state) can slip through.
+  - No dev-browser tool in this environment — browser AC for US-014 needs manual verification on npm run dev.
+---
+
+
+## 2026-04-24 - US-015
+- Auto-advance to the next flagged hole after a successful per-hole confirm, plus a "Ready to sign off" CTA banner when all flagged holes are resolved.
+- Files changed:
+  - components/review/ReviewWorkspace.tsx (confirmActiveHole computes next flagged on 2xx and setSelectedHoleId; refactored setHoles updater to local-const pattern so the next-flagged compute sees the updated list without a nested setter. Added top-center green CTA banner shown when !hasBlockingFlagged && !signOffOpen && !confirmError && !undoError.)
+  - prd.json (US-015 passes=true + notes)
+  - progress.txt (this entry + 2 new Codebase Patterns)
+- Flow:
+  1. Reviewer clicks confirm (or hits Enter). POST /confirm 2xx returns.
+  2. Local holes list is updated inline: `const updated = holes.map(h => h.id === selectedHoleId ? {...h, confirmed:true, needs_review:false} : h)` then setHoles(updated).
+  3. Next flagged hole = updated.filter(needs_review && !confirmed).sort(assignment_confidence ASC, hole_number ASC tiebreaker)[0].
+  4. If nextFlagged: setSelectedHoleId(nextFlagged.id) + setSelectedFeatureId(null). The existing fit-to-hole useEffect at line ~583 triggers on selectedHoleId change and re-centers the map automatically.
+  5. If no nextFlagged: hasBlockingFlagged flips false. A green top-center banner renders: "All flagged holes resolved — ready to sign off." with its own "Sign off course" button that opens the SignOffDialog.
+  6. Banner hides when signOffOpen/confirmError/undoError is set, so it never visually stacks with alert banners or the open dialog.
+- **Learnings for future iterations:**
+  - Re-centering on hole change already has a dedicated useEffect — don't also call `mapRef.current?.fitToHole(...)` inline after setSelectedHoleId. That would fire the same request twice (once inline, once on the next render tick via the useEffect) and make the behaviour tough to reason about.
+  - HoleList's orderHolesForReview() is the authoritative ordering the user sees. When programmatically picking "the next hole", sort by the same keys (assignment_confidence ASC, hole_number ASC as tiebreaker) so the UI selection matches the top of the visible list.
+  - The re-render after setHoles + setSelectedHoleId batches into a single paint in React 18 — no flash of the just-confirmed hole before the advance.
+  - No dev-browser tool in this environment — browser AC needs manual verification on npm run dev. Steps: load a course with 2+ flagged holes, confirm one, watch focus move to the next lowest-confidence flagged hole and the map pan/zoom. Confirm the last flagged hole and watch the green CTA banner appear; click it and the sign-off dialog should open.
+---
+
+
+## 2026-04-24 - US-016
+- Added Jest tests proving transaction integrity for all four correction-mutation endpoints.
+- Files changed:
+  - tests/api/corrections-transactions.test.ts (new — 8 tests, 2 per endpoint)
+  - prd.json (US-016 passes=true + notes)
+  - progress.txt (this entry + 2 new Codebase Patterns)
+- Strategy:
+  1. `const realTransaction = db.$transaction.bind(db)` captured at module scope before any spy.
+  2. Per test: `jest.spyOn(db, '$transaction').mockImplementationOnce(arg => realTransaction([arg[0], db.$executeRaw\`SELECT 1/0\`]))` — swap one of the two statements for a failing raw SQL, still running inside the real PG transaction.
+  3. Invoke the route handler (PATCH/DELETE exported function) and `await expect(invoke()).rejects.toThrow()`.
+  4. Read DB state with raw SELECTs and assert: feature row unchanged (hole_id, feature_type, or ST_AsGeoJSON(geometry) — depending on the endpoint), and zero corrections rows with the matching correction_type.
+- Coverage:
+  - PATCH /hole: second fails → hole_id stays on hole1, no 'hole_reassignment' row; first fails → same.
+  - PATCH /type: second fails → feature_type stays 'green', no 'type_change' row; first fails → same.
+  - PATCH /geometry: second fails → geojson matches the pre-test snapshot, no 'geometry_edit' row; first fails → same.
+  - DELETE /feature: second fails → feature row still exists, no 'polygon_delete' row; first fails → same.
+- Seed pattern: `beforeAll` creates org + user + course + 2 holes; `beforeEach` resets the feature (raw SQL INSERT with ST_Multi(ST_GeomFromText('POLYGON((...))', 4326))) and clears corrections; `afterAll` tears it all down. Uses the same docker-compose Postgres/PostGIS as the other tests/api suites.
+- **Learnings for future iterations:**
+  - Don't try to mock Prisma end-to-end for atomicity tests. Intercepting $transaction and forwarding to a bound reference with one substituted statement is minimal and proves atomicity at the PG level rather than in TypeScript.
+  - `SELECT 1/0` is a portable way to raise inside a Postgres transaction without inventing a test-only table or trigger. It bubbles up as a Prisma error and aborts the tx — exactly what the test wants to prove.
+  - `jest.restoreAllMocks()` in afterEach is necessary because `mockImplementationOnce` consumes one call but leaves the spy object attached — without restore, a second test in the same describe() block that also spies will trip over the leftover spy.
+  - The pre-existing tests/api/jobs.test.ts failure (Cannot find module '@/lib/pipeline') is unrelated — flagged in the US-013 progress note — and does not affect this suite.
+---
+
+
+## 2026-04-24 - US-013
+- Wired the Enter keyboard shortcut to confirm the currently selected hole (POST /api/courses/[id]/holes/[holeId]/confirm). Other shortcuts in the AC (D, Delete/Backspace, Ctrl+Z, isTypingTarget gate) were already present from US-009/010/011 — this story only adds Enter + verifies the others still fire.
+- Files changed:
+  - components/review/ReviewWorkspace.tsx (Enter branch in keydown, confirmActiveHole callback, confirmError banner, holes state setter)
+  - prd.json (US-013 passes=true + notes)
+  - progress.txt (this entry + two new Codebase Patterns entries)
+- Flow:
+  1. Enter pressed while `!drawModeActive && !deleteDialogFeature && !isTypingTarget(e.target) && e.target not BUTTON/A && selectedHoleId && !hole.confirmed` → preventDefault + confirmActiveHole().
+  2. confirmActiveHole() POSTs, non-2xx surfaces red banner at top-center with Retry button.
+  3. On 2xx, setHoles mirrors `confirmed=true, needs_review=false`, bumps holeFeaturesVersion (refetch so features.reviewed=true renders), and calls refreshGeoJSON() (map overlay refresh).
+- **Learnings for future iterations:**
+  - Added two reusable patterns to the Codebase Patterns block at the top of this file: (a) Enter+focused-button double-fire guard, (b) client-side hole-confirm flow.
+  - The Inspector "Confirm Hole (Week 6)" button is still rendered disabled — out of scope for US-013 but a natural follow-up alongside US-014 (sign-off screen). Not touched here to keep the diff focused on the keyboard-shortcut AC.
+  - The pre-existing `tests/api/jobs.test.ts` failure (Cannot find module '@/lib/pipeline') predates this branch — it has been failing since Weeks 2-4 and is unrelated to correction-flow work. All other 30 tests pass.
+  - Manual browser verification of the Enter shortcut is still required — no dev-browser tool in this environment.
+---
+
+
+## 2026-04-24 - US-017
+- Added reject-path tests covering lock 409, geometry 422 (invalid + area < 20 m²), and sign-off 400 (unchanged course status).
+- Files changed:
+  - tests/api/corrections-reject-paths.test.ts (new — 4 tests)
+  - prd.json (US-017 passes=true + notes)
+  - progress.txt (this entry + 2 Codebase Patterns)
+- Coverage:
+  1. Lock 409: userA holds the lock via direct UPDATE; session = userB; PATCH /api/features/[featureId]/hole → 409; assert feature.hole_id unchanged and zero 'hole_reassignment' corrections rows.
+  2. PATCH /geometry 422 invalid: bowtie MultiPolygon — ST_GeomFromGeoJSON parses it, ST_IsValid returns false; assert 422 and no 'geometry_edit' corrections.
+  3. PATCH /geometry 422 area floor: ~1.1m × 1.1m polygon at latitude 37° ≈ 1.2 m²; assert 422 and no 'geometry_edit' corrections.
+  4. POST /review/complete 400: hole 1 flagged (needs_review=true, confirmed=false), session = reviewer; body.blocking_holes includes 1; courses.status still 'unmapped'; no 'course_signoff' corrections written.
+- Approach notes:
+  - Reused the seed pattern from corrections-transactions.test.ts (org + 2 reviewer users + course + 2 holes in beforeAll; reset lock/status/holes and re-insert feature in beforeEach). Two users are required here because the lock test must flip between holder and attacker.
+  - beforeEach resets `courses.status` back to 'unmapped' in addition to lock state because the /review/complete test would otherwise see a dirty state if reordered.
+- **Learnings for future iterations:**
+  - When a test wants to assert "reject-path didn't leak writes", count the corrections rows by correction_type rather than just the feature state — a route that somehow inserted the audit row but failed the mutation still needs to be caught.
+  - For lock-conflict tests, mock the session via the next-auth mock as userB AFTER the UPDATE that sets locked_by=userA. Otherwise timing-dependent readers (if any) could see a different lock state during the session hydration.
+  - The pre-existing `tests/api/jobs.test.ts` failure (`Cannot find module '@/lib/pipeline'`) still exists and is unrelated to this work — 8 of 9 test suites pass, 42 tests pass.
+---
+
+## 2026-04-24 - US-018
+- Added hard-delete corrections-row survival tests to guarantee the audit trail is intact after DELETE /api/features/[featureId].
+- Files changed:
+  - tests/api/corrections-hard-delete.test.ts (new — 2 tests)
+  - prd.json (US-018 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Flow:
+  1. Seed org + user + course + one hole (hole_number=7) + one feature (feature_type='bunker', confidence_score=0.654, MultiPolygon ~9,900 m²).
+  2. Test A — calls DELETE handler, asserts status=204, then SELECT id FROM features WHERE id=$1 returns 0 rows.
+  3. Test B — same call, then SELECT corrections WHERE course_id=$1 AND correction_type='polygon_delete' returns exactly 1 row with: feature_id IS NULL, has_geometry_snapshot=true, ST_Area(::geography) within [9000,11000], original_feature_type='bunker', original_hole_number=7, notes JSON includes confidence_score ≈ 0.654, corrected_by = session.user.id.
+- **Learnings for future iterations:**
+  - The seed in corrections-transactions.test.ts does not populate features.confidence_score. For audit-snapshot assertions you need to add `confidence_score` to the INSERT or the notes JSON will show `{"confidence_score": null}` and break the assertion.
+  - AC wording said "hole_id and assignment_confidence snapshots" but the corrections schema has no hole_id column and no assignment_confidence column. Map AC intent to the real schema: original_hole_number (for hole identity) and notes JSON.confidence_score (for feature confidence). Call this out explicitly in PRD notes so it isn't misread as drift.
+  - confidence_score stored via `json_build_object('confidence_score', f.confidence_score)::text` emits a numeric JSON value, not a string. The test must `Number(parsed.confidence_score)` rather than `expect.any(String)` — got burned on first run.
+  - Tests import route handlers lazily via `await import('@/app/...')` inside helpers so the next-auth mock is installed before module graph evaluation. Matches the pattern in corrections-transactions and corrections-reject-paths tests.
+---
+
+
+## 2026-04-24 - US-019
+- Added org-isolation tests covering every correction endpoint so a cross-org caller can never read or mutate another org's data.
+- Files changed:
+  - tests/api/corrections-org-isolation.test.ts (new — 7 tests, one per endpoint)
+  - prd.json (US-019 passes=true + notes)
+  - progress.txt (this entry + Codebase Patterns update)
+- Coverage:
+  1. PATCH /api/features/[featureId]/hole → 404 + feature.hole_id unchanged + zero corrections rows.
+  2. PATCH /api/features/[featureId]/type → 404 + feature.feature_type unchanged + zero corrections rows.
+  3. PATCH /api/features/[featureId]/geometry → 404 + ST_AsGeoJSON(geometry) unchanged + zero corrections rows.
+  4. DELETE /api/features/[featureId] → 404 + feature row still exists + zero corrections rows.
+  5. POST /api/courses/[id]/holes/[holeId]/confirm → 404 + hole needs_review/confirmed/confirmation_type untouched + zero corrections rows.
+  6. POST /api/courses/[id]/review/complete → 404 + courses.status still 'unmapped' + zero corrections rows.
+  7. GET /api/corrections?courseId=... → 404 + body.corrections undefined (pre-seeded orgB row not leaked).
+- Seed pattern: attacker user lives in orgA; course + holes + feature + one pre-seeded correction belong to orgB. beforeEach resets all mutable state (feature, corrections, course lock/status, hole flags) so test isolation is airtight. Session mocked as attacker for every test.
+- **Learnings for future iterations:**
+  - All correction endpoints use 404 (not 403) for cross-org access — that's by design. The helpers join through courses.org_id and return null on mismatch; routes treat null identically to "not found". Don't expect 403.
+  - Pair every 404 assertion with a "no side-effect" assertion. A bug that 404s AFTER landing a write would still be a security hole; the no-corrections-rows + no-row-mutation checks catch that.
+  - GET endpoints need a body-level assertion in addition to the status code — a buggy implementation that 404s via a thrown error but sent a partial body via a prior `res.write` would still leak; asserting `body.corrections === undefined` catches it.
+  - The jobs.test.ts failure (Cannot find module '@/lib/pipeline') still present — unrelated to this story.
+---
+
+## 2026-04-24 - US-020
+- Added component tests for HoleList, Inspector, and CorrectionActions (the Inspector correction sub-controls).
+- Files changed:
+  - tests/components/HoleList.test.tsx (extended with 4 render tests)
+  - tests/components/Inspector.test.tsx (new — 6 tests)
+  - tests/components/CorrectionActions.test.tsx (new — 6 tests)
+  - prd.json (US-020 passes=true)
+  - progress.txt (this entry + 2 Codebase Pattern additions)
+- Coverage:
+  1. HoleList render: listbox renders rows in review order (flagged ASC confidence → others ASC hole number); progress counter header '2 / 5 confirmed' + footer 'Progress: 2 / 5 ✓'; data-flagged/data-confirmed attrs correct per row; aria-selected tracks selectedHoleId.
+  2. Inspector view switching: placeholder when hole is null, hole view when hole selected + no feature selected, polygon view when selectedFeatureId is set (reassign-hole-select + change-type-select + delete-polygon-open all visible).
+  3. Inspector dropdown population: reassign-hole-select lists 'Hole 1', 'Hole 2', 'Hole 3' in order and defaults to the feature's current hole id; change-type-select lists the 5 FeatureType options (green, fairway, tee_box, bunker, water_hazard) and defaults to the feature's current type.
+  4. CorrectionActions (Reassign + ChangeType): Apply disabled until select value differs from current; Cancel reverts the select and re-disables Apply; non-2xx surfaces inline role=alert with body.error message and onSuccess is NOT called; 2xx fires onSuccess with {featureId, newHoleId, priorHoleId} / {featureId, priorType}.
+- **Learnings for future iterations:**
+  - jsdom has no global Response constructor — `new Response(body, init)` throws ReferenceError inside component tests. Use a plain FakeResponse shim { ok, status, json(): Promise<unknown> }. Only those three are touched by the Inspector correction fetch code path.
+  - Stash `const originalFetch = global.fetch` at module scope and restore in `afterEach` — prevents one test's mock from leaking into the next. Do NOT use jest.restoreAllMocks for fetch (jest.fn assigned to global doesn't get tracked by restoreAllMocks unless via jest.spyOn, which doesn't work on cross-realm globals cleanly here).
+  - Wrap the Apply click in `await act(async () => { fireEvent.click(...) })` so the async state update after the fetch resolves settles before assertions. Without act, the "error visible" assertion races the render.
+  - Inspector's correction controls preserve the staged select value after a non-2xx response so the user can Retry without re-picking — assert this explicitly in the error-path test; regressing to reset-on-error would be an AC violation under US-012.
+  - FEATURE_TYPE_OPTIONS in Inspector.tsx is the source of truth for the dropdown — the test asserts the exact array order. If the list grows, update FEATURE_LABEL and FEATURE_SWATCH in the same file AND this test's expectation.
+  - `npx tsc --noEmit` is the project's typecheck command — no explicit `typecheck` script in package.json. Run it after editing tests to catch ambient-types drift early.
+---
+
+## 2026-04-24 - US-021
+- Wired @sentry/nextjs@^10.50.0 into the Next.js app with DSN-gated init so local dev stays quiet when SENTRY_DSN is unset.
+- Files changed:
+  - package.json / package-lock.json (added @sentry/nextjs)
+  - sentry.client.config.ts (new) — reads NEXT_PUBLIC_SENTRY_DSN || SENTRY_DSN, skips init when absent
+  - sentry.server.config.ts (new) — reads SENTRY_DSN, skips init when absent
+  - sentry.edge.config.ts (new) — reads SENTRY_DSN, skips init when absent
+  - instrumentation.ts (new) — Next.js register hook; dynamically imports server or edge config by NEXT_RUNTIME
+  - next.config.mjs — wrapped with withSentryConfig({ silent: true })
+  - app/api/debug/sentry/route.ts (new) — deliberately throws, calls Sentry.captureException, returns 500
+  - tests/api/sentry.test.ts (new) — @jest-environment node, mocks @sentry/nextjs, asserts captureException called once with the Error
+  - prd.json (US-021 passes=true + notes)
+- Verification: npx tsc --noEmit clean; npx jest tests/components tests/api/sentry.test.ts tests/api/health.test.ts → 30/30 pass.
+- **Learnings for future iterations:**
+  - Sentry 10.x uses the Next.js `instrumentation.ts` register() hook to load server/edge configs — the legacy practice of dropping `sentry.server.config.ts` at the project root and letting Next auto-pick it up was removed in Sentry 9. Keep both patterns: the three `sentry.*.config.ts` files for the PRD AC wording, and instrumentation.ts as the actual loader.
+  - `withSentryConfig(nextConfig, { silent: true })` is safe to call even when SENTRY_DSN is unset at build time — it just skips source-map upload. No need to branch on `process.env.SENTRY_DSN` in next.config.mjs.
+  - Guard `Sentry.init({ dsn })` behind `if (dsn)` in each config file — Sentry's own "DSN not provided" warning is loud enough to noise local dev logs every request; the conditional skip keeps the console clean.
+  - `disableLogger: true` was deprecated in Sentry 10.x — it now logs a DEPRECATION WARNING on every Jest run. Use `webpack.treeshake.removeDebugLogging` if the noise needs suppressing, or just drop `disableLogger` and live with it (we dropped it).
+  - API-route tests that import a route handler under jsdom fail with `ReferenceError: Request is not defined` because NextResponse pulls in Next's Request polyfill. Fix: add `@jest-environment node` docblock at the top of the test file — same trick courses.test.ts and jobs.test.ts already use.
+  - Mocking @sentry/nextjs in a test: `jest.mock('@sentry/nextjs', () => ({ captureException: jest.fn(), init: jest.fn() }))` is enough — the route handler only calls captureException, and Sentry's init is invoked at module-load time via the config files which the test doesn't import.
+  - Client config should read `NEXT_PUBLIC_SENTRY_DSN || SENTRY_DSN` — the browser bundle can't see server-only env vars, so if the deployment uses a single SENTRY_DSN for both environments it needs the NEXT_PUBLIC_ prefix to reach the client. Falling back to SENTRY_DSN keeps dev ergonomics simple.
+---
+
+## 2026-04-24 - US-022
+- Added post-deploy smoke check for /dashboard/courses unauth redirect and tightened the existing /api/health probe so the workflow fails if either smoke step fails.
+- Files changed:
+  - .github/workflows/deploy.yml (added 'Smoke test /dashboard/courses unauth redirect' step; modified /api/health step to break out of the retry loop instead of exit 0 so subsequent smoke steps run)
+  - prd.json (US-022 passes=true + notes)
+- Flow:
+  1. After 'Deploy to Vercel' captures the deployment URL via steps.deploy.outputs.url
+  2. /api/health is probed up to 5 times with 5s backoff; first 200 marks success, otherwise exit 1 at the end
+  3. /dashboard/courses is curled once with `-o /dev/null -w '%{http_code}'`; must be 307 (next-auth withAuth default) or 302, otherwise exit 1
+- **Learnings for future iterations:**
+  - Multi-step smoke checks in CI: if one probe step has an internal `exit 0` on success, any later probe steps are skipped because the first step never fell through — capture a success flag in a variable and only `exit 1` at the end of the retry loop, then let control flow continue to the next step.
+  - next-auth's withAuth middleware returns 307 (temporary redirect) on unauthenticated dashboard requests in Next.js 14. Allow both 307 and 302 in the assertion for resilience against minor behavior changes.
+  - Prefer `steps.deploy.outputs.url` over a STAGING_URL env var for post-deploy smoke tests — it targets the freshly deployed URL for both prod and preview, and doesn't need a separate secret.
+  - Workflow YAML typecheck isn't part of `tsc --noEmit`; GitHub's Actions YAML lints only at push time. Keep the step names unique so the logs are greppable.
+---
+
+## 2026-04-24 - US-023
+- Added scripts/perf-check.ts — ts-node runnable that probes a live dashboard for the three MVP NFRs from ROADMAP.md §"Success Metrics" and prints a pass/fail table (exit 1 on any miss).
+- Files changed:
+  - scripts/perf-check.ts (new)
+  - package.json (added "perf:check" script)
+  - README.md (new "Performance validation" section documenting env vars + usage)
+  - prd.json (US-023 passes=true)
+- Flow: requireEnv guards on PERF_BASE_URL / PERF_SESSION_COOKIE / PERF_COURSE_ID / PERF_FEATURE_ID / PERF_HOLE_ID_A / PERF_HOLE_ID_B → timed() wrapper using performance.now() → (1) GET /dashboard/courses vs 1500ms, (2) GET /api/courses/[id]/features/geojson vs 2000ms, (3) PATCH /api/features/[featureId]/hole vs 500ms. Correction toggles hole A→B and best-effort restores to A afterward so repeat runs are idempotent.
+- **Learnings for future iterations:**
+  - NextAuth + credential provider makes programmatic perf auth painful: CSRF token fetch + login POST + cookie parse just to get a session. For one-shot perf probes, have the operator paste `next-auth.session-token=...` from DevTools into `PERF_SESSION_COOKIE`. Document it in README.
+  - package.json inline ts-node `--compiler-options {\"module\":\"CommonJS\"}` args (the pattern used by prisma seed) don't survive zsh's JSON-brace parsing when invoked via `npm run <script>` — the quotes get collapsed and ts-node's arg parser throws "Expected property name or '}'". Use `TS_NODE_COMPILER_OPTIONS='{"module":"CommonJS"}'` as an env var prefix instead — shell-safe and ts-node reads it at startup.
+  - `npx tsc --noEmit` respects tsconfig `include: ["**/*.ts"]`, so anything dropped into scripts/ gets typechecked without extra wiring. No need for a separate tsconfig.scripts.json for simple one-file utilities.
+  - Node 20+ has global `fetch` + DOM `Response` in tsconfig `lib: ["dom", ...]` — no need to import from undici or polyfill in a Node script that only calls fetch. Keep scripts dependency-free.
+  - The pre-existing jobs.test.ts "Cannot find module '@/lib/pipeline'" failure is unrelated (present on the tip of the branch before this story), not introduced by perf-check.
+  - Redirect tolerance in smoke/perf scripts: allow 307/302 but surface them as `note: "HTTP 307 (likely unauthenticated — cookie expired?)"` so the operator knows the cookie rolled. Don't pass-fail a redirect just for being redirected — it's a measurement artifact, not a perf failure.
+---

@@ -126,6 +126,38 @@ unmapped → processing → segmented → assigned → reviewed → published
 
 ---
 
+## Performance validation
+
+`npm run perf:check` measures the MVP NFR targets (`ROADMAP.md`
+§"Success Metrics") against a running dashboard:
+
+| Check | Target |
+|-------|--------|
+| Course library page render | < 1.5s |
+| Map GeoJSON render | < 2s |
+| Correction save round-trip (PATCH hole) | < 500ms |
+
+The script authenticates via a session cookie copied from a logged-in
+browser, so start by logging in at `http://localhost:3000/login`, then
+copy the `next-auth.session-token=...` cookie from DevTools and set:
+
+```bash
+export PERF_BASE_URL=http://localhost:3000
+export PERF_SESSION_COOKIE='next-auth.session-token=...'
+export PERF_COURSE_ID=<uuid of a course with features>
+export PERF_FEATURE_ID=<uuid of a feature on that course>
+export PERF_HOLE_ID_A=<current hole of the feature — will be restored>
+export PERF_HOLE_ID_B=<any other hole on the same course>
+
+npm run perf:check
+```
+
+The script prints a pass/fail table and exits non-zero if any target is
+missed. The feature is toggled from hole A → B and back, so repeat runs
+leave the database unchanged.
+
+---
+
 ## Related repositories
 
 - [golf-segmentation](https://github.com/yourusername/golf-segmentation) — ML pipeline (DeepLabv3+ + LLM hole assignment)

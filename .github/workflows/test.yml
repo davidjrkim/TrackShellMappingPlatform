@@ -4,16 +4,29 @@ on:
   push:
     branches: ['**']
   pull_request:
-    branches: [main, dev]
+    branches: [master]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trackshell
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
-      # Dummy values so Next.js build + Prisma generate don't fail in CI.
-      # Real secrets live in Vercel / GitHub Secrets for deploy.yml.
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/trackshell
       NEXTAUTH_SECRET: ci-dummy-secret-not-used-at-runtime
       NEXTAUTH_URL: http://localhost:3000
@@ -34,6 +47,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Apply DB migrations
+        run: npx prisma migrate deploy
 
       - name: Lint
         run: npm run lint

@@ -41,7 +41,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     })
   }
 
-  const upstream = await openPipelineStream(job.id)
+  if (!job.pipeline_job_id) {
+    return new Response('Pipeline job id not yet assigned', { status: 503 })
+  }
+  const upstream = await openPipelineStream(job.pipeline_job_id)
   if (!upstream.ok || !upstream.body) {
     return new Response('Upstream unavailable', { status: 502 })
   }

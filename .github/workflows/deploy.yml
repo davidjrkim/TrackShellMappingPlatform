@@ -2,7 +2,7 @@ name: deploy
 
 on:
   push:
-    branches: [main, dev]
+    branches: [master]
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -32,9 +32,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Applies migrations to the environment targeted by DATABASE_URL.
-      # The `main` branch secret must point at the production DB;
-      # the `dev` branch secret must point at staging.
+      # Applies migrations to the production DB targeted by DATABASE_URL.
       - name: Run Prisma migrations
         run: npx prisma migrate deploy
 
@@ -42,40 +40,39 @@ jobs:
         run: npm install --global vercel@latest
 
       - name: Pull Vercel environment
-        run: |
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            vercel pull --yes --environment=production --token=$VERCEL_TOKEN
-          else
-            vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
-          fi
+        run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
 
       - name: Build with Vercel
-        run: |
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            vercel build --prod --token=$VERCEL_TOKEN
-          else
-            vercel build --token=$VERCEL_TOKEN
-          fi
+        run: vercel build --prod --token=$VERCEL_TOKEN
 
       - name: Deploy to Vercel
         id: deploy
         run: |
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)
-          else
-            URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN)
-          fi
+          URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Deployed: $URL"
 
       - name: Smoke test /api/health
         run: |
           URL="${{ steps.deploy.outputs.url }}"
+          ok=""
           for i in 1 2 3 4 5; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health" || echo "000")
             echo "health probe $i: $code"
-            if [ "$code" = "200" ]; then exit 0; fi
+            if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 5
           done
-          echo "Health check failed after 5 attempts"
-          exit 1
+          if [ -z "$ok" ]; then
+            echo "Health check failed after 5 attempts"
+            exit 1
+          fi
+
+      - name: Smoke test /dashboard/courses unauth redirect
+        run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/dashboard/courses" || echo "000")
+          echo "dashboard unauth probe: $code"
+          if [ "$code" != "307" ] && [ "$code" != "302" ]; then
+            echo "Expected 307 or 302 redirect to /login, got $code"
+            exit 1
+          fi

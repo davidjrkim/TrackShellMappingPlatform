@@ -3,7 +3,7 @@
 export type HoleSummary = {
   id: string
   hole_number: number
-  assignment_confidence: number | null
+  confidence: number | null
   needs_review: boolean
   confirmed: boolean
   polygon_count: number
@@ -16,14 +16,14 @@ type Props = {
 }
 
 // PRD 2b §4.1: flagged (needs_review=true AND !confirmed) at top,
-// sorted by ascending assignment_confidence. All other holes below in
+// sorted by ascending confidence. All other holes below in
 // hole-number order.
 export function orderHolesForReview<T extends HoleSummary>(holes: T[]): T[] {
   const flagged = holes
     .filter((h) => h.needs_review && !h.confirmed)
     .sort((a, b) => {
-      const ac = a.assignment_confidence ?? 1
-      const bc = b.assignment_confidence ?? 1
+      const ac = a.confidence ?? 1
+      const bc = b.confidence ?? 1
       if (ac !== bc) return ac - bc
       return a.hole_number - b.hole_number
     })
@@ -97,7 +97,7 @@ export default function HoleList({ holes, selectedHoleId, onSelect }: Props) {
                   <span className="font-medium">Hole {h.hole_number}</span>
                 </span>
                 <span className={`text-xs ${isSelected ? 'text-white/80' : 'text-gray-400'}`}>
-                  {formatConfidence(h.assignment_confidence)}
+                  {formatConfidence(h.confidence)}
                 </span>
               </button>
             </li>

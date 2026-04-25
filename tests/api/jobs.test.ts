@@ -11,8 +11,15 @@ jest.mock('next-auth', () => ({ getServerSession: jest.fn() }))
 import { getServerSession } from 'next-auth'
 const mockSession = getServerSession as jest.MockedFunction<typeof getServerSession>
 
-jest.mock('@/lib/pipeline', () => ({
-  triggerPipelineJob: jest.fn(async () => ({ ok: true })),
+// pipelineJobId must be a valid UUID — pipeline_jobs.id is UUID-typed and
+// attachJobMetadata casts it. The dashboard's UPDATE is a no-op when no row
+// matches (pipeline service didn't actually run), which is fine for the
+// 202-path test below.
+jest.mock('../../lib/pipeline', () => ({
+  triggerPipelineJob: jest.fn(async () => ({
+    ok: true,
+    pipelineJobId: '00000000-0000-4000-8000-000000000001',
+  })),
   cancelPipelineJob: jest.fn(async () => ({ ok: true })),
   openPipelineStream: jest.fn(async () => new Response(null, { status: 502 })),
 }))

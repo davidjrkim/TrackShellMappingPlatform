@@ -2,10 +2,9 @@ import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import {
-  createJob,
+  attachJobMetadata,
   getCourseStatus,
   hasActiveJob,
-  markJobFailed,
 } from '@/lib/jobs'
 import { triggerPipelineJob } from '@/lib/pipeline'
 
@@ -31,7 +30,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
   }
 
-  const { courseId, jobType, force, tileSource } = body as Record<string, unknown>
+  const { courseId, jobType, force } = body as Record<string, unknown>
 
   if (typeof courseId !== 'string' || !UUID_RE.test(courseId)) {
     return NextResponse.json({ error: 'courseId must be a UUID' }, { status: 400 })
@@ -43,7 +42,6 @@ export async function POST(req: Request) {
     )
   }
   const forceFlag = force === true
-  const tile = typeof tileSource === 'string' && tileSource.trim().length > 0 ? tileSource.trim() : undefined
 
   const status = await getCourseStatus(courseId, session.user.orgId)
   if (!status) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -70,27 +68,26 @@ export async function POST(req: Request) {
     )
   }
 
-  const { id: jobId } = await createJob({
-    courseId,
-    jobType,
-    triggeredBy: session.user.id,
-  })
-
   const pipelineRes = await triggerPipelineJob({
-    jobId,
     courseId,
     jobType,
     force: forceFlag,
-    tileSource: tile,
   })
 
   if (!pipelineRes.ok) {
-    await markJobFailed(jobId, pipelineRes.error ?? 'pipeline unreachable')
     return NextResponse.json(
-      { error: 'Failed to start pipeline', detail: pipelineRes.error, jobId },
+      { error: 'Failed to start pipeline', detail: pipelineRes.error },
       { status: 502 },
     )
   }
+
+  const jobId = pipelineRes.pipelineJobId
+
+  await attachJobMetadata({
+    jobId,
+    triggeredBy: session.user.id,
+    jobType,
+  })
 
   return NextResponse.json({ jobId, status: 'queued' }, { status: 202 })
 }

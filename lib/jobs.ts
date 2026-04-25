@@ -7,6 +7,7 @@ export type JobRow = {
   id: string
   course_id: string
   job_type: string
+  pipeline_job_id: string | null
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   triggered_by: string | null
   model_version: string | null
@@ -21,17 +22,22 @@ export type JobRow = {
 
 export const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 
-export async function createJob(input: {
-  courseId: string
-  jobType: string
+// The pipeline service INSERTs the pipeline_jobs row itself (with id = the
+// UUID it returns from POST /jobs/run). The dashboard patches operator
+// metadata on after the fact: triggered_by is dashboard-only state, and
+// job_type gets overwritten with the operator's selection (the pipeline
+// always inserts 'full').
+export async function attachJobMetadata(input: {
+  jobId: string
   triggeredBy: string
-}): Promise<{ id: string }> {
-  const rows = await db.$queryRaw<{ id: string }[]>`
-    INSERT INTO pipeline_jobs (id, course_id, job_type, status, triggered_by)
-    VALUES (gen_random_uuid(), ${input.courseId}::uuid, ${input.jobType}, 'queued'::"job_status_enum", ${input.triggeredBy}::uuid)
-    RETURNING id
+  jobType: string
+}): Promise<void> {
+  await db.$executeRaw`
+    UPDATE pipeline_jobs
+    SET triggered_by = ${input.triggeredBy}::uuid,
+        job_type     = ${input.jobType}
+    WHERE id = ${input.jobId}::uuid
   `
-  return { id: rows[0].id }
 }
 
 export async function markJobFailed(jobId: string, error: string): Promise<void> {
@@ -46,7 +52,7 @@ export async function markJobFailed(jobId: string, error: string): Promise<void>
 
 export async function getJobForOrg(jobId: string, orgId: string): Promise<JobRow | null> {
   const rows = await db.$queryRaw<JobRow[]>`
-    SELECT j.id, j.course_id, j.job_type, j.status::text AS status, j.triggered_by,
+    SELECT j.id, j.course_id, j.job_type, j.pipeline_job_id, j.status::text AS status, j.triggered_by,
            j.model_version, j.llm_model, j.polygons_generated, j.input_tiles_count,
            j.error_message, j.started_at, j.completed_at, j.created_at
     FROM pipeline_jobs j
@@ -107,7 +113,7 @@ export async function listJobs(filters: JobListFilters): Promise<{
   const typeList   = jobTypes && jobTypes.length > 0 ? jobTypes : null
 
   const rows = await db.$queryRaw<JobListRow[]>`
-    SELECT j.id, j.course_id, j.job_type, j.status::text AS status, j.triggered_by,
+    SELECT j.id, j.course_id, j.job_type, j.pipeline_job_id, j.status::text AS status, j.triggered_by,
            j.model_version, j.llm_model, j.polygons_generated, j.input_tiles_count,
            j.error_message, j.started_at, j.completed_at, j.created_at,
            c.name AS course_name,

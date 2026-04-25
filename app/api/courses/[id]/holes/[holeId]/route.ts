@@ -35,7 +35,7 @@ export async function GET(
     hole: {
       id: hole.id,
       hole_number: hole.hole_number,
-      assignment_confidence: hole.assignment_confidence,
+      confidence: hole.confidence,
       needs_review: hole.needs_review,
       confirmed: hole.confirmed,
     },
@@ -43,7 +43,7 @@ export async function GET(
       id: f.id,
       feature_type: f.feature_type,
       area_sqm: f.area_sqm,
-      confidence_score: f.confidence_score,
+      confidence: f.confidence,
       reviewed: f.reviewed,
       hole_id: f.hole_id,
       hole_number: f.hole_number,

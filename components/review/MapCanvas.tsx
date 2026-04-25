@@ -27,11 +27,13 @@ type Props = {
   selectedHoleNumber: number | null
   selectedFeatureId: string | null
   onFeatureClick: (featureId: string | null) => void
+  onMapReady?: (map: MapLibreMap) => void
 }
 
 export type MapCanvasHandle = {
   fitToHole: (holeNumber: number | null) => void
   fitToCourse: () => void
+  getMap: () => MapLibreMap | null
 }
 
 function buildStyle(token: string | undefined): maplibregl.StyleSpecification {
@@ -101,17 +103,22 @@ function bboxFromFeatures(
 }
 
 const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { featureCollection, bbox, selectedHoleNumber, selectedFeatureId, onFeatureClick },
+  { featureCollection, bbox, selectedHoleNumber, selectedFeatureId, onFeatureClick, onMapReady },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const onFeatureClickRef = useRef(onFeatureClick)
+  const onMapReadyRef = useRef(onMapReady)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick
   }, [onFeatureClick])
+
+  useEffect(() => {
+    onMapReadyRef.current = onMapReady
+  }, [onMapReady])
 
   // Empty FC placeholder so layers exist even before data lands.
   const emptyFC = useMemo<GeoJSON.FeatureCollection>(
@@ -231,6 +238,7 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       })
 
       setReady(true)
+      onMapReadyRef.current?.(map)
     })
 
     return () => {
@@ -343,6 +351,9 @@ const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         bboxFromFeatures(featureCollection, () => true)
       if (!bounds) return
       map.fitBounds(bounds, { padding: 32, duration: 400 })
+    },
+    getMap() {
+      return mapRef.current
     },
   }), [bbox, featureCollection])
 

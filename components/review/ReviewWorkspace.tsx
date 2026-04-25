@@ -1,9 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Map as MapLibreMap } from 'maplibre-gl'
 import HoleList, { type HoleSummary } from './HoleList'
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas'
 import Inspector, { type InspectorFeature } from './Inspector'
+import DrawMode from '@/components/map/DrawMode'
+import DeletePolygonDialog from './DeletePolygonDialog'
+import SignOffDialog from './SignOffDialog'
 
 type LockInfo = {
   locked_by: string | null
@@ -26,11 +30,48 @@ type Props = {
   initialLock: LockInfo
 }
 
+// PRD §5 Ctrl+Z: single-level undo. Each successful correction records an
+// inverse payload here. Applying the undo clears the slot (no undo-of-undo).
+// Delete records a non-undoable entry so the button can surface a tooltip
+// instead of silently going dead.
+type LastCorrection =
+  | {
+      kind: 'reassign'
+      undoable: true
+      featureId: string
+      priorHoleId: string
+      priorHoleNumber: number | null
+    }
+  | {
+      kind: 'type'
+      undoable: true
+      featureId: string
+      priorType: string
+    }
+  | {
+      kind: 'geometry'
+      undoable: true
+      featureId: string
+      priorGeometry: GeoJSON.MultiPolygon
+    }
+  | {
+      kind: 'delete'
+      undoable: false
+      reason: string
+    }
+
+function polygonToMultiPolygon(
+  geom: GeoJSON.MultiPolygon | GeoJSON.Polygon,
+): GeoJSON.MultiPolygon {
+  if (geom.type === 'MultiPolygon') return geom
+  return { type: 'MultiPolygon', coordinates: [geom.coordinates] }
+}
+
 type HoleFeatureResponse = {
   hole: {
     id: string
     hole_number: number
-    assignment_confidence: number | null
+    confidence: number | null
     needs_review: boolean
     confirmed: boolean
   }
@@ -51,7 +92,7 @@ export default function ReviewWorkspace({
   topologyByHoleId,
   initialLock,
 }: Props) {
-  const [holes] = useState<HoleSummary[]>(initialHoles)
+  const [holes, setHoles] = useState<HoleSummary[]>(initialHoles)
   const [selectedHoleId, setSelectedHoleId] = useState<string | null>(() => {
     const flagged = initialHoles.find((h) => h.needs_review && !h.confirmed)
     if (flagged) return flagged.id
@@ -63,6 +104,19 @@ export default function ReviewWorkspace({
 
   const [holeFeatures, setHoleFeatures] = useState<InspectorFeature[]>([])
   const [holeFeaturesLoading, setHoleFeaturesLoading] = useState(false)
+
+  const [mapInstance, setMapInstance] = useState<MapLibreMap | null>(null)
+  const [drawModeActive, setDrawModeActive] = useState(false)
+  const [deleteDialogFeature, setDeleteDialogFeature] = useState<InspectorFeature | null>(null)
+
+  const [lastCorrection, setLastCorrection] = useState<LastCorrection | null>(null)
+  const [undoInFlight, setUndoInFlight] = useState(false)
+  const [undoError, setUndoError] = useState<string | null>(null)
+
+  const [confirmInFlight, setConfirmInFlight] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  const [signOffOpen, setSignOffOpen] = useState(false)
 
   const [lockState, setLockState] = useState<
     | { status: 'idle' | 'acquiring' | 'acquired' | 'released' }
@@ -90,6 +144,13 @@ export default function ReviewWorkspace({
   const selectedHole = useMemo(
     () => holes.find((h) => h.id === selectedHoleId) ?? null,
     [holes, selectedHoleId],
+  )
+
+  // Sign-off is reachable once every flagged hole has been resolved
+  // (either confirmed manually or cleared of the needs_review flag).
+  const hasBlockingFlagged = useMemo(
+    () => holes.some((h) => h.needs_review && !h.confirmed),
+    [holes],
   )
 
   const selectedTopology = selectedHoleId ? topologyByHoleId[selectedHoleId] ?? null : null
@@ -148,8 +209,9 @@ export default function ReviewWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId])
 
-  // Initial GeoJSON fetch
-  useEffect(() => {
+  // GeoJSON loader — used both on mount and after a successful correction so
+  // the map reflects the new hole assignment / type immediately.
+  const refreshGeoJSON = useCallback(() => {
     let cancelled = false
     fetch(`/api/courses/${courseId}/features/geojson`)
       .then((r) => {
@@ -169,7 +231,14 @@ export default function ReviewWorkspace({
     }
   }, [courseId])
 
-  // Load selected hole detail
+  useEffect(() => {
+    return refreshGeoJSON()
+  }, [refreshGeoJSON])
+
+  // Load selected hole detail. holeFeaturesVersion is bumped after a successful
+  // correction to force a refetch (so feature_type / hole_number reflect the
+  // newly written state without an optimistic update).
+  const [holeFeaturesVersion, setHoleFeaturesVersion] = useState(0)
   useEffect(() => {
     if (!selectedHoleId) {
       setHoleFeatures([])
@@ -195,7 +264,209 @@ export default function ReviewWorkspace({
     return () => {
       cancelled = true
     }
-  }, [courseId, selectedHoleId])
+  }, [courseId, selectedHoleId, holeFeaturesVersion])
+
+  const onReassignSuccess = useCallback(
+    (payload: { featureId: string; newHoleId: string; priorHoleId: string | null }) => {
+      // Polygon now belongs to a different hole — switch to it so the
+      // Inspector and map both stay focused on the moved feature.
+      setSelectedHoleId(payload.newHoleId)
+      setSelectedFeatureId(null)
+      if (payload.priorHoleId) {
+        const priorHole = holes.find((h) => h.id === payload.priorHoleId) ?? null
+        setLastCorrection({
+          kind: 'reassign',
+          undoable: true,
+          featureId: payload.featureId,
+          priorHoleId: payload.priorHoleId,
+          priorHoleNumber: priorHole?.hole_number ?? null,
+        })
+      } else {
+        // Feature was previously unassigned — no prior hole to restore.
+        setLastCorrection(null)
+      }
+      setUndoError(null)
+      refreshGeoJSON()
+    },
+    [holes, refreshGeoJSON],
+  )
+
+  const onTypeChangeSuccess = useCallback(
+    (payload: { featureId: string; priorType: string }) => {
+      setLastCorrection({
+        kind: 'type',
+        undoable: true,
+        featureId: payload.featureId,
+        priorType: payload.priorType,
+      })
+      setUndoError(null)
+      setHoleFeaturesVersion((v) => v + 1)
+      refreshGeoJSON()
+    },
+    [refreshGeoJSON],
+  )
+
+  const onRequestDeleteFeature = useCallback((feature: InspectorFeature) => {
+    setDeleteDialogFeature(feature)
+  }, [])
+
+  const onDeleteSuccess = useCallback(() => {
+    setDeleteDialogFeature(null)
+    setSelectedFeatureId(null)
+    if (drawModeActive) setDrawModeActive(false)
+    // No feature-insert endpoint exists yet, so a polygon_delete cannot be
+    // reversed from the client. Record a disabled slot so Undo surfaces
+    // *why* rather than looking broken.
+    setLastCorrection({
+      kind: 'delete',
+      undoable: false,
+      reason: 'Deleted polygons cannot be restored from the reviewer UI',
+    })
+    setUndoError(null)
+    setHoleFeaturesVersion((v) => v + 1)
+    refreshGeoJSON()
+  }, [drawModeActive, refreshGeoJSON])
+
+  const applyUndo = useCallback(async () => {
+    if (!lastCorrection || !lastCorrection.undoable) return
+    if (undoInFlight) return
+    setUndoInFlight(true)
+    setUndoError(null)
+    try {
+      let res: Response
+      switch (lastCorrection.kind) {
+        case 'reassign':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/hole`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ holeId: lastCorrection.priorHoleId }),
+          })
+          break
+        case 'type':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/type`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ featureType: lastCorrection.priorType }),
+          })
+          break
+        case 'geometry':
+          res = await fetch(`/api/features/${lastCorrection.featureId}/geometry`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ geometry: lastCorrection.priorGeometry }),
+          })
+          break
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Undo failed (${res.status})`
+        setUndoError(message)
+        return
+      }
+      // Reassign undo: restore selection to the original hole so the user
+      // can see the polygon back where it started.
+      if (lastCorrection.kind === 'reassign') {
+        setSelectedHoleId(lastCorrection.priorHoleId)
+        setSelectedFeatureId(null)
+      }
+      // Single-level undo — clear the slot so Ctrl+Z can't stack.
+      setLastCorrection(null)
+      setHoleFeaturesVersion((v) => v + 1)
+      refreshGeoJSON()
+    } catch (err) {
+      setUndoError(err instanceof Error ? err.message : 'Undo failed')
+    } finally {
+      setUndoInFlight(false)
+    }
+  }, [lastCorrection, refreshGeoJSON, undoInFlight])
+
+  const confirmActiveHole = useCallback(async () => {
+    if (!selectedHoleId) return
+    const hole = holes.find((h) => h.id === selectedHoleId)
+    if (!hole || hole.confirmed) return
+    if (confirmInFlight) return
+    setConfirmInFlight(true)
+    setConfirmError(null)
+    try {
+      const res = await fetch(
+        `/api/courses/${courseId}/holes/${selectedHoleId}/confirm`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        const message =
+          (body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : null) ?? `Confirm failed (${res.status})`
+        setConfirmError(message)
+        return
+      }
+      const updated = holes.map((h) =>
+        h.id === selectedHoleId
+          ? { ...h, confirmed: true, needs_review: false }
+          : h,
+      )
+      setHoles(updated)
+      // Auto-advance to the next flagged hole (lowest confidence).
+      // Falls back to hole_number when confidences tie. When none remain, the
+      // "Ready to sign off" CTA surfaces via hasBlockingFlagged.
+      const nextFlagged = updated
+        .filter((h) => h.needs_review && !h.confirmed)
+        .sort((a, b) => {
+          const ac = a.confidence ?? 1
+          const bc = b.confidence ?? 1
+          if (ac !== bc) return ac - bc
+          return a.hole_number - b.hole_number
+        })[0]
+      if (nextFlagged) {
+        setSelectedHoleId(nextFlagged.id)
+        setSelectedFeatureId(null)
+      }
+      setHoleFeaturesVersion((v) => v + 1)
+      refreshGeoJSON()
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : 'Confirm failed')
+    } finally {
+      setConfirmInFlight(false)
+    }
+  }, [confirmInFlight, courseId, holes, refreshGeoJSON, selectedHoleId])
+
+  // Exit draw mode if the selected feature clears. Otherwise DrawMode would
+  // keep editing a feature that is no longer in focus.
+  useEffect(() => {
+    if (!selectedFeatureId && drawModeActive) setDrawModeActive(false)
+  }, [selectedFeatureId, drawModeActive])
+
+  const selectedFeatureGeometry = useMemo<GeoJSON.MultiPolygon | GeoJSON.Polygon | null>(() => {
+    if (!selectedFeatureId || !featureCollection) return null
+    const match = featureCollection.features.find(
+      (f) => (f.properties as { id?: string } | null)?.id === selectedFeatureId,
+    )
+    const geom = match?.geometry
+    if (!geom) return null
+    if (geom.type === 'MultiPolygon' || geom.type === 'Polygon') {
+      return geom as GeoJSON.MultiPolygon | GeoJSON.Polygon
+    }
+    return null
+  }, [featureCollection, selectedFeatureId])
+
+  const onDrawSaved = useCallback(() => {
+    if (selectedFeatureId && selectedFeatureGeometry) {
+      setLastCorrection({
+        kind: 'geometry',
+        undoable: true,
+        featureId: selectedFeatureId,
+        priorGeometry: polygonToMultiPolygon(selectedFeatureGeometry),
+      })
+      setUndoError(null)
+    }
+    setDrawModeActive(false)
+    setHoleFeaturesVersion((v) => v + 1)
+    refreshGeoJSON()
+  }, [refreshGeoJSON, selectedFeatureGeometry, selectedFeatureId])
 
   // Deselect feature when switching holes
   useEffect(() => {
@@ -234,6 +505,19 @@ export default function ReviewWorkspace({
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return
+      // While the sign-off dialog is open it owns the keyboard — it has its
+      // own capture-phase Escape handler, and workspace shortcuts (D, Delete,
+      // Enter, Ctrl+Z, fit-to-*) would otherwise fire on the map underneath.
+      if (signOffOpen) return
+      // Ctrl+Z / ⌘+Z — single-level undo of the last correction.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+        if (drawModeActive) return
+        if (deleteDialogFeature) return
+        if (!lastCorrection || !lastCorrection.undoable) return
+        e.preventDefault()
+        void applyUndo()
+        return
+      }
       switch (e.key) {
         case 'ArrowDown': {
           e.preventDefault()
@@ -261,14 +545,53 @@ export default function ReviewWorkspace({
           break
         }
         case 'Escape': {
+          if (drawModeActive) break
+          if (deleteDialogFeature) break
           setSelectedFeatureId(null)
+          break
+        }
+        case 'd':
+        case 'D': {
+          if (selectedFeatureId && selectedFeatureGeometry) {
+            e.preventDefault()
+            setDrawModeActive((v) => !v)
+          }
+          break
+        }
+        case 'Delete':
+        case 'Backspace': {
+          if (!selectedFeatureId) break
+          if (drawModeActive) break
+          if (deleteDialogFeature) break
+          const hit = holeFeatures.find((f) => f.id === selectedFeatureId)
+          if (!hit) break
+          e.preventDefault()
+          setDeleteDialogFeature(hit)
+          break
+        }
+        case 'Enter': {
+          if (drawModeActive) break
+          if (deleteDialogFeature) break
+          // Browsers fire a synthetic click on the focused button when Enter
+          // is pressed. If we also fire confirmActiveHole, the user gets two
+          // actions for one keystroke. Skip when a button/link is focused and
+          // let the native handler run.
+          if (e.target instanceof HTMLElement) {
+            const tag = e.target.tagName
+            if (tag === 'BUTTON' || tag === 'A') break
+          }
+          if (!selectedHoleId) break
+          const hole = holes.find((h) => h.id === selectedHoleId)
+          if (!hole || hole.confirmed) break
+          e.preventDefault()
+          void confirmActiveHole()
           break
         }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [holes, selectedHoleId])
+  }, [holes, holeFeatures, selectedHoleId, selectedFeatureId, selectedFeatureGeometry, drawModeActive, deleteDialogFeature, signOffOpen, lastCorrection, applyUndo, confirmActiveHole])
 
   // Re-center on hole when the user changes selection.
   useEffect(() => {
@@ -323,7 +646,17 @@ export default function ReviewWorkspace({
           selectedHoleNumber={selectedHole?.hole_number ?? null}
           selectedFeatureId={selectedFeatureId}
           onFeatureClick={onFeatureClick}
+          onMapReady={setMapInstance}
         />
+
+        {drawModeActive && selectedFeatureId && selectedFeatureGeometry && (
+          <DrawMode
+            map={mapInstance}
+            feature={{ id: selectedFeatureId, geometry: selectedFeatureGeometry }}
+            onSaved={onDrawSaved}
+            onCancel={() => setDrawModeActive(false)}
+          />
+        )}
 
         <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
           <button
@@ -345,7 +678,97 @@ export default function ReviewWorkspace({
           >
             Fit to course (C)
           </button>
+          {lastCorrection && (() => {
+            const enabled = lastCorrection.undoable && !undoInFlight
+            const title = lastCorrection.undoable
+              ? `Undo last ${lastCorrection.kind} (Ctrl+Z)`
+              : lastCorrection.reason
+            return (
+              <button
+                type="button"
+                onClick={enabled ? () => void applyUndo() : undefined}
+                disabled={!enabled}
+                title={title}
+                className="px-2.5 py-1.5 text-xs rounded-md bg-white/95 border border-gray-300 text-gray-700 hover:bg-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="undo-last-correction"
+              >
+                {undoInFlight ? 'Undoing…' : `Undo ${lastCorrection.kind} (Ctrl+Z)`}
+              </button>
+            )
+          })()}
+
+          <button
+            type="button"
+            onClick={() => setSignOffOpen(true)}
+            disabled={hasBlockingFlagged}
+            title={
+              hasBlockingFlagged
+                ? 'Confirm all flagged holes before signing off'
+                : 'Sign off course'
+            }
+            className="px-2.5 py-1.5 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700 shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+            data-testid="signoff-open"
+          >
+            Sign off course
+          </button>
         </div>
+
+        {!hasBlockingFlagged && !signOffOpen && !confirmError && !undoError && (
+          <div
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 bg-green-50 border border-green-300 rounded-md px-3 py-1.5 text-xs text-green-900 shadow-sm"
+            data-testid="ready-to-signoff"
+          >
+            <span className="font-medium">All flagged holes resolved — ready to sign off.</span>
+            <button
+              type="button"
+              onClick={() => setSignOffOpen(true)}
+              className="flex-none px-2 py-0.5 rounded-md bg-green-600 text-white hover:bg-green-700"
+              data-testid="ready-to-signoff-cta"
+            >
+              Sign off course
+            </button>
+          </div>
+        )}
+
+        {confirmError && (
+          <div
+            role="alert"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
+            data-testid="confirm-hole-error"
+          >
+            <span>{confirmError}</span>
+            <button
+              type="button"
+              onClick={() => void confirmActiveHole()}
+              disabled={confirmInFlight}
+              className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="confirm-hole-retry"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {undoError && (
+          <div
+            role="alert"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm"
+            data-testid="undo-error"
+          >
+            <span>{undoError}</span>
+            {lastCorrection && lastCorrection.undoable && (
+              <button
+                type="button"
+                onClick={() => void applyUndo()}
+                disabled={undoInFlight}
+                className="flex-none px-2 py-0.5 rounded-md border border-red-300 bg-white text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="undo-retry"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
 
         {lockState.status === 'error' && (
           <div className="absolute top-3 left-3 z-10 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-xs text-red-800 shadow-sm">
@@ -358,10 +781,31 @@ export default function ReviewWorkspace({
         hole={selectedHole}
         features={holeFeatures}
         topology={selectedTopology}
+        holes={holes}
         selectedFeatureId={selectedFeatureId}
         onSelectFeature={(id) => setSelectedFeatureId(id)}
+        onReassignSuccess={onReassignSuccess}
+        onTypeChangeSuccess={onTypeChangeSuccess}
+        onRequestDeleteFeature={onRequestDeleteFeature}
         loading={holeFeaturesLoading}
       />
+
+      {deleteDialogFeature && (
+        <DeletePolygonDialog
+          feature={deleteDialogFeature}
+          onCancel={() => setDeleteDialogFeature(null)}
+          onSuccess={onDeleteSuccess}
+        />
+      )}
+
+      {signOffOpen && (
+        <SignOffDialog
+          courseId={courseId}
+          holes={holes}
+          onCancel={() => setSignOffOpen(false)}
+          onSignedOff={() => setSignOffOpen(false)}
+        />
+      )}
     </div>
   )
 }

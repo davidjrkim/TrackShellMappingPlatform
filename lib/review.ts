@@ -121,7 +121,7 @@ export type HoleReviewRow = {
   id: string
   hole_number: number
   par: number | null
-  assignment_confidence: number | null
+  confidence: number | null
   needs_review: boolean
   confirmed: boolean
   polygon_count: number
@@ -137,7 +137,7 @@ export async function listHolesForReview(courseId: string): Promise<HoleReviewRo
       h.id,
       h.hole_number,
       h.par,
-      h.assignment_confidence::float AS assignment_confidence,
+      h.confidence::float AS confidence,
       h.needs_review,
       h.confirmed,
       COALESCE(f.polygon_count, 0)::int  AS polygon_count,
@@ -165,7 +165,7 @@ export type HoleFeatureRow = {
   id: string
   feature_type: string
   area_sqm: number | null
-  confidence_score: number | null
+  confidence: number | null
   reviewed: boolean
   hole_id: string | null
   hole_number: number | null
@@ -177,7 +177,7 @@ export async function listFeaturesForHole(holeId: string): Promise<HoleFeatureRo
       f.id,
       f.feature_type::text       AS feature_type,
       f.area_sqm::float          AS area_sqm,
-      f.confidence_score::float  AS confidence_score,
+      f.confidence::float        AS confidence,
       f.reviewed,
       f.hole_id,
       h.hole_number
@@ -191,13 +191,13 @@ export async function listFeaturesForHole(holeId: string): Promise<HoleFeatureRo
 export async function getHoleForCourse(
   courseId: string,
   holeId: string,
-): Promise<{ id: string; hole_number: number; assignment_confidence: number | null; needs_review: boolean; confirmed: boolean } | null> {
+): Promise<{ id: string; hole_number: number; confidence: number | null; needs_review: boolean; confirmed: boolean } | null> {
   const rows = await db.$queryRaw<
-    { id: string; hole_number: number; assignment_confidence: number | null; needs_review: boolean; confirmed: boolean }[]
+    { id: string; hole_number: number; confidence: number | null; needs_review: boolean; confirmed: boolean }[]
   >`
     SELECT id,
            hole_number,
-           assignment_confidence::float AS assignment_confidence,
+           confidence::float AS confidence,
            needs_review,
            confirmed
     FROM holes

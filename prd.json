@@ -1,0 +1,362 @@
+{
+  "project": "TrackShellMappingPlatform",
+  "branchName": "ralph/mvp-corrections-signoff",
+  "description": "Week 6 + Week 7 of ROADMAP.md — corrections API, review UI mutations, course sign-off to hit MVP (M6), then polish/tests/production hardening (M7).",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "PATCH /api/features/[featureId]/hole — reassign hole",
+      "description": "As a reviewer, I want to reassign a polygon to a different hole so that AI misassignments can be corrected.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/hole/route.ts with PATCH handler",
+        "Requires valid session; enforces org isolation via course.org_id on the feature",
+        "Rejects with 409 if the course is locked by a different user",
+        "Writes a corrections row with correction_type = 'hole_reassignment' and old_hole_id/new_hole_id BEFORE updating features.hole_id — both in the same Prisma transaction",
+        "Returns 422 if new hole_id does not belong to the same course",
+        "Returns updated feature JSON on success",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/hole/route.ts + lib/corrections.ts helpers (getFeatureForMutation, getHoleRef, isLockedByOther). Atomic $transaction writes corrections row before UPDATE features.hole_id."
+    },
+    {
+      "id": "US-002",
+      "title": "PATCH /api/features/[featureId]/type — change feature type",
+      "description": "As a reviewer, I want to change a polygon's feature type so that mis-typed features (e.g. bunker labelled as green) can be corrected.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/type/route.ts with PATCH handler",
+        "Validates new feature_type against FeatureType enum; 422 on invalid",
+        "Rejects 409 if course locked by another user",
+        "Writes corrections row with correction_type = 'type_change', old_type, new_type BEFORE the UPDATE — same transaction",
+        "Returns updated feature JSON on success",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/type/route.ts. Validates body featureType against FeatureType enum (422 for invalid/unchanged), reuses getFeatureForMutation + isLockedByOther. Atomic $transaction writes corrections (correction_type='type_change', original_feature_type, corrected_feature_type) before UPDATE features.feature_type. Casts to feature_type_enum explicitly in raw SQL."
+    },
+    {
+      "id": "US-003",
+      "title": "PATCH /api/features/[featureId]/geometry — edit polygon geometry",
+      "description": "As a reviewer, I want to save edited polygon geometry after vertex dragging so that AI polygon boundaries can be refined.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/geometry/route.ts with PATCH handler",
+        "Accepts GeoJSON MultiPolygon in request body",
+        "Uses raw SQL in lib/spatial.ts to run ST_IsValid and ST_Area(geometry::geography) — returns 422 if invalid or area < 20 m²",
+        "Rejects 409 if course locked by another user",
+        "Writes corrections row with correction_type = 'geometry_edit' and snapshot of prior geometry BEFORE updating features.geometry — same transaction",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/geometry/route.ts. Body must be { geometry: GeoJSON MultiPolygon } (400 otherwise). Reuses lib/spatial.ts isGeometryValid() for ST_IsValid + ST_Area(::geography) — 422 on invalid or area < 20 m². Atomic $transaction: INSERT corrections ('geometry_edit') snapshotting f.geometry via INSERT...SELECT, then UPDATE features.geometry = ST_Multi(ST_GeomFromGeoJSON(...))."
+    },
+    {
+      "id": "US-004",
+      "title": "DELETE /api/features/[featureId] — hard delete polygon with snapshot",
+      "description": "As a reviewer, I want to delete a spurious polygon so the course geometry reflects reality.",
+      "acceptanceCriteria": [
+        "Route at app/api/features/[featureId]/route.ts with DELETE handler",
+        "Rejects 409 if course locked by another user",
+        "Snapshots geometry, feature_type, hole_id, assignment_confidence into the corrections row (correction_type = 'polygon_delete') BEFORE the hard DELETE — same transaction",
+        "Corrections row survives after feature row is removed",
+        "Returns 204 on success",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Implemented app/api/features/[featureId]/route.ts DELETE. Reuses getFeatureForMutation (org isolation + 404) and isLockedByOther (409). Atomic $transaction: INSERT corrections ('polygon_delete') via INSERT ... SELECT from features LEFT JOIN holes — snapshots geometry into original_geometry, feature_type into original_feature_type, hole_number into original_hole_number, and confidence_score into notes as JSON (schema has no dedicated column). Then DELETE FROM features. corrections.feature_id has ON DELETE SET NULL so the audit row survives. Returns 204 No Content."
+    },
+    {
+      "id": "US-005",
+      "title": "POST /api/courses/[id]/holes/[holeId]/confirm — confirm hole",
+      "description": "As a reviewer, I want to mark a hole as confirmed so that sign-off can complete.",
+      "acceptanceCriteria": [
+        "Route at app/api/courses/[id]/holes/[holeId]/confirm/route.ts with POST handler",
+        "Rejects 409 if course locked by another user",
+        "In one transaction: sets holes.needs_review = false, holes.confirmed = true, holes.confirmation_type = 'manual', and features.reviewed = true for all features on that hole",
+        "Writes corrections row with correction_type = 'hole_confirmed'",
+        "Returns updated hole JSON",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Implemented app/api/courses/[id]/holes/[holeId]/confirm/route.ts POST. Added migration 20260424000001_add_hole_confirmation_type (CREATE TYPE hole_confirmation_type_enum AS ENUM ('manual','auto'); ALTER TABLE holes ADD COLUMN confirmation_type). Added getHoleForMutation helper in lib/corrections.ts (hole + course org/lock). Atomic $transaction: INSERT corrections ('hole_confirmed', original_hole_number, feature_id NULL), UPDATE holes SET needs_review=false, confirmed=true, confirmation_type='manual', UPDATE features SET reviewed=true WHERE hole_id=$1. Returns updated hole JSON."
+    },
+    {
+      "id": "US-006",
+      "title": "POST /api/courses/[id]/review/complete — course sign-off",
+      "description": "As a reviewer, I want to sign off on a course so it can progress to publishable state.",
+      "acceptanceCriteria": [
+        "Route at app/api/courses/[id]/review/complete/route.ts with POST handler",
+        "Rejects 409 if locked by another user",
+        "Returns 400 if any hole on the course has needs_review = true AND confirmed = false",
+        "In one transaction: auto-confirms remaining high-confidence holes (sets confirmed = true, confirmation_type = 'auto'), sets courses.status = 'reviewed', records reviewer notes (optional body field) onto the final corrections summary row",
+        "Releases the course lock on success",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Implemented app/api/courses/[id]/review/complete/route.ts POST. Optional JSON body { notes?: string }. Uses getLock (org isolation + 404) then isLockedByOther (409). Sign-off gate: SELECT holes WHERE needs_review=true AND confirmed=false → 400 with blocking_holes: number[]. Atomic $transaction: INSERT corrections (correction_type='course_signoff', notes), UPDATE features SET reviewed=true WHERE hole_id IN (unconfirmed holes on course), UPDATE holes SET confirmed=true, confirmation_type='auto'::hole_confirmation_type_enum WHERE confirmed=false, UPDATE courses SET status='reviewed'::course_status, locked_by=NULL, locked_at=NULL. Lock release happens inside the same transaction as status flip (not a separate releaseLock call) so a failed status update cannot leak the lock."
+    },
+    {
+      "id": "US-007",
+      "title": "GET /api/corrections — correction history by course",
+      "description": "As a reviewer, I want to read correction history for a course so I can audit what changed.",
+      "acceptanceCriteria": [
+        "Route at app/api/corrections/route.ts with GET handler",
+        "Accepts courseId query param; returns 400 if missing",
+        "Enforces org isolation via the course's org_id",
+        "Returns corrections ordered by created_at DESC with user email/name, correction_type, and geometry snapshot metadata",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Implemented app/api/corrections/route.ts GET. Requires session (401). Returns 400 if courseId missing; 404 if courseId is not a UUID or the course is not visible to the caller's org (org_id + deleted_at IS NULL). Joins users for corrected_by email/name. Geometry snapshot metadata exposed as { has_geometry_snapshot: boolean, snapshot_area_sqm: float|null } computed via ST_Area(original_geometry::geography) — avoids shipping full MultiPolygon payloads on every audit read. Rows ordered by created_at DESC and returned under { corrections: [...] }."
+    },
+    {
+      "id": "US-008",
+      "title": "Wire Inspector reassign-hole and change-type dropdowns",
+      "description": "As a reviewer, I want the Inspector panel controls to actually submit reassignment and type changes so corrections flow end to end.",
+      "acceptanceCriteria": [
+        "components/review/Inspector.tsx polygon view has a 'Reassign to hole' dropdown listing holes 1..N for the course; calling PATCH /api/features/[featureId]/hole on Apply",
+        "Polygon view has a 'Feature type' dropdown bound to FeatureType enum; calling PATCH /api/features/[featureId]/type on Apply",
+        "Apply button disabled until selection differs from current value; Cancel reverts",
+        "Blocks the Apply button during in-flight request; surfaces non-2xx errors inline (no optimistic writes)",
+        "Map canvas re-fetches GeoJSON after a successful mutation",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Implemented in components/review/Inspector.tsx + ReviewWorkspace.tsx. Added two new sub-controls in FeatureView: ReassignHoleControl (select with all hole numbers sorted ASC, value = hole.id) and ChangeTypeControl (select with the 5 FeatureType options). Each has its own Apply/Cancel pair. Apply is disabled until selectedValue !== currentValue (and during in-flight); Cancel reverts local state and clears the inline error. Apply calls PATCH /api/features/[featureId]/hole or /type respectively, with no optimistic write — the original feature data stays visible until the parent's refresh callback lands the new server state. Non-2xx surfaces the body.error inline as a role=alert <p>. ReviewWorkspace now exposes refreshGeoJSON (memoised) used both on mount and after onReassignSuccess / onTypeChangeSuccess; reassign also switches selectedHoleId to the new hole and the hole-detail effect refetches features via a holeFeaturesVersion bump. Browser verification: no dev-browser/playwright tool available in this environment — needs manual verification on the running dev server."
+    },
+    {
+      "id": "US-009",
+      "title": "Mapbox GL Draw vertex-drag geometry editing",
+      "description": "As a reviewer, I want to drag polygon vertices on the map and save the new shape so boundaries can be refined.",
+      "acceptanceCriteria": [
+        "components/map/DrawMode.tsx wraps Mapbox GL Draw and mounts onto the review MapCanvas",
+        "'D' keyboard shortcut toggles draw mode on the currently selected polygon",
+        "While in draw mode, existing vertices are draggable; Enter/Apply submits the edited MultiPolygon to PATCH /api/features/[featureId]/geometry",
+        "422 responses surface an inline error and leave the original geometry untouched in the UI",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Added @mapbox/mapbox-gl-draw@^1.5.1 dep and types/mapbox-gl-draw.d.ts ambient module (upstream ships no .d.ts). components/map/DrawMode.tsx wraps MapboxDraw, seeds it with the selected feature's geometry, and switches to direct_select so vertices drag immediately. MapLibre/Mapbox canvas class mismatch shim: adds 'mapboxgl-canvas' class while Draw is mounted (MapLibre's canvas is 'maplibregl-canvas' and src/events.js#132 checks for the Mapbox class). Draw control buttons are suppressed (displayControlsDefault:false, controls:{}) — UI is an overlay toolbar with Apply/Cancel + inline error. Enter = Apply, Esc = Cancel (no-op while focus in input/textarea). MapCanvas gained onMapReady callback + getMap() on MapCanvasHandle; ReviewWorkspace stores the MapLibre instance in state and passes it to DrawMode. ReviewWorkspace 'D' key toggles drawModeActive when a polygon is selected and its geometry is known; Escape handler no-ops while draw mode is active so a single Escape exits draw mode without also deselecting the feature. On 2xx: setDrawModeActive(false) + refreshGeoJSON + bump holeFeaturesVersion so area_sqm in Inspector reflects the saved shape. On non-2xx: inline role=alert error in the toolbar, working geometry still live in Draw for retry. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-010",
+      "title": "Delete polygon confirmation dialog",
+      "description": "As a reviewer, I want a confirmation dialog before deleting a polygon so I don't delete by accident.",
+      "acceptanceCriteria": [
+        "Delete action in Inspector opens a modal showing feature_type, hole number, and a 'Cannot be undone' warning",
+        "Confirm triggers DELETE /api/features/[featureId]; Cancel closes the modal with no request",
+        "Delete/Backspace key also triggers the dialog when a polygon is selected",
+        "On 2xx the polygon disappears from the map and hole polygon list refreshes",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Implemented components/review/DeletePolygonDialog.tsx (fixed-inset modal, role=dialog, aria-modal, Escape closes via capture-phase listener with stopPropagation so the underlying ReviewWorkspace Esc handler doesn't also fire). Inspector FeatureView gained a red 'Delete polygon' button that calls onRequestDeleteFeature(feature) — Inspector takes the new prop, wires it to ReviewWorkspace. ReviewWorkspace owns deleteDialogFeature state; the dialog is rendered at the workspace level (not inside the right panel) so the overlay sits above everything. Delete/Backspace keyboard shortcut opens the dialog by looking up the selected feature in holeFeatures; guarded by (selectedFeatureId && !drawModeActive && !deleteDialogFeature). isTypingTarget guard at the top of the keydown effect covers INPUT/SELECT/TEXTAREA, so Backspace inside the reassign/type selects never triggers delete. onDeleteSuccess clears deleteDialogFeature, clears selectedFeatureId, exits drawModeActive if open, bumps holeFeaturesVersion (polygon list refetch) and calls refreshGeoJSON() (map overlay refresh). Non-2xx surfaces inline role=alert inside the dialog; modal stays open for retry; submitting disables both buttons. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-011",
+      "title": "Ctrl+Z single-level undo per correction",
+      "description": "As a reviewer, I want to undo my last correction so I can recover from a misclick.",
+      "acceptanceCriteria": [
+        "Review page tracks the last applied correction (type + payload) in client state",
+        "Ctrl+Z issues the inverse correction via the correction API (e.g. reassign back to prior hole, restore prior type/geometry, recreate deleted polygon via a new feature insert endpoint only if the original still has snapshot data — otherwise undo is disabled with tooltip)",
+        "Only one level of undo — after undo, the slot is cleared",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Implemented in ReviewWorkspace.tsx with a LastCorrection discriminated union ({kind:'reassign'|'type'|'geometry', undoable:true, ...prior snapshot} | {kind:'delete', undoable:false, reason}). Success callbacks from Inspector and DrawMode record the inverse payload; onReassignSuccess and onTypeChangeSuccess signatures were extended to carry prior values from the control at Apply time; geometry prior comes from the existing selectedFeatureGeometry memo before the refreshGeoJSON lands the new one. Ctrl+Z (and ⌘+Z) handled in the global keydown effect — preflight guards: drawModeActive, deleteDialogFeature, lastCorrection absent/non-undoable → no-op. applyUndo dispatches the inverse PATCH directly (not via Inspector) so the slot is cleared on success without re-registering an undo-of-undo. Reassign undo restores selectedHoleId to the prior hole so the user sees the polygon back where it started. Delete records a non-undoable slot with a reason string so the Undo button surfaces WHY it's disabled (no feature-insert endpoint yet, matching AC's 'otherwise undo is disabled with tooltip' clause). UI: Undo button in the map top-right controls showing 'Undo <kind> (Ctrl+Z)' and a title tooltip; inline role=alert error shown at top-center on non-2xx. No dev-browser tool available in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-012",
+      "title": "Offline / server-failure warning — block submission without 2xx",
+      "description": "As a reviewer, I want a clear warning if my correction didn't save, so I never assume a failed save succeeded.",
+      "acceptanceCriteria": [
+        "All correction mutations in Inspector/DrawMode/Delete treat non-2xx (or network error) as failure: UI state does NOT advance and the original polygon/hole state remains visible",
+        "Toast or banner shows the error message with a Retry button",
+        "No optimistic updates anywhere in the review UI",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "All four correction mutations (reassign hole, change type, edit geometry, delete) plus Ctrl+Z undo already treat non-2xx and network errors as failure with no optimistic updates — the original feature/hole state stays visible because each control reads the feature prop from the server-of-record and a parent refreshGeoJSON/holeFeaturesVersion bump lands the new state only on 2xx. This story wires a Retry button into each inline error banner: components/review/Inspector.tsx (ReassignHoleControl + ChangeTypeControl) swapped the bare <p role=alert> for a red-bordered banner containing the message + Retry button that calls the same onApply; components/map/DrawMode.tsx error banner gained a Retry that calls apply; components/review/DeletePolygonDialog.tsx error banner gained a Retry that calls onConfirm; components/review/ReviewWorkspace.tsx undo error banner gained a Retry that calls applyUndo (only rendered when the slot is still undoable). Retry buttons are disabled while submitting so a rapid re-click doesn't double-submit. No toast library was introduced — the existing inline-banner pattern already satisfies the AC's 'toast or banner' wording and keeps the error next to the control it came from."
+    },
+    {
+      "id": "US-013",
+      "title": "Review UI keyboard shortcuts — D, Delete/Backspace, Enter, Ctrl+Z",
+      "description": "As a reviewer, I want keyboard shortcuts for frequent correction actions so I can review quickly.",
+      "acceptanceCriteria": [
+        "D toggles draw mode on selected polygon (already shipped via US-009 — confirm global handler)",
+        "Delete or Backspace opens delete-polygon dialog when a polygon is selected",
+        "Enter confirms the currently active hole (calls POST /confirm)",
+        "Ctrl+Z triggers single-level undo",
+        "Shortcuts are no-ops when focus is inside an input/textarea",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "Implemented Enter = confirm current hole in components/review/ReviewWorkspace.tsx. Added confirmActiveHole() callback that POSTs /api/courses/{id}/holes/{holeId}/confirm, surfaces non-2xx inline via a top-center role=alert banner with Retry button (mirrors the undoError banner pattern), and on 2xx updates local holes state (confirmed=true, needs_review=false), bumps holeFeaturesVersion (refetch features so reviewed=true lands), and calls refreshGeoJSON(). Changed `const [holes] = useState(initialHoles)` to include a setter. Keydown handler gained an Enter branch with guards: drawModeActive, deleteDialogFeature, focus on BUTTON/A (lets the native button click fire instead of double-action), no selectedHoleId, or hole already confirmed. `isTypingTarget` already excludes INPUT/TEXTAREA/SELECT/contentEditable — covers the 'shortcuts are no-ops while typing' AC. D/Delete/Backspace/Ctrl+Z were confirmed already present from US-009/010/011. confirmActiveHole added to the keydown effect's dep array alongside the state it reads. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-014",
+      "title": "Sign-off screen with correction summary and reviewer notes",
+      "description": "As a reviewer, I want a final sign-off view with a summary and notes field so I can close out the course.",
+      "acceptanceCriteria": [
+        "Sign-off view reachable from the review page once all flagged holes are resolved",
+        "Shows correction counts by type (reassignment, type change, geometry edit, delete), auto-confirm count, and a textarea for reviewer notes",
+        "'Mark Course Reviewed' button calls POST /api/courses/[id]/review/complete with the notes in body",
+        "400 responses render inline with the names of holes still blocking sign-off",
+        "On success navigates back to /dashboard/courses/[id]/overview with the course now in 'reviewed' status",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "Implemented components/review/SignOffDialog.tsx (fixed-inset role=dialog modal, capture-phase Escape handler mirroring DeletePolygonDialog). On mount fetches GET /api/corrections?courseId=... and reduces to per-type counts; reassignments/type changes/geometry edits/polygon deletes rendered in a 2-col dl, plus an 'Auto-confirmed on sign-off' total computed client-side as holes.filter(!h.confirmed).length so the reviewer sees what the auto-confirm path will touch. Reviewer-notes <textarea> wired to POST /api/courses/[id]/review/complete with { notes } — empty/whitespace-only notes are sent as undefined (the endpoint already trims). 400 responses read body.blocking_holes and render inline: 'Still blocking: Hole 3, Hole 7' with the error banner's Retry button re-submitting. Non-400 non-2xx also surface inline with Retry. On 2xx: onSignedOff() closes the dialog and router.push('/dashboard/courses/[id]/overview') + router.refresh() so the overview reflects the new 'reviewed' status. ReviewWorkspace hosts a 'Sign off course' button in the map top-right controls (blue primary, disabled with tooltip when holes.some(needs_review && !confirmed), data-testid='signoff-open'); dialog rendered at workspace root. Added a signOffOpen guard at the top of the global keydown handler so the underlying D/Delete/Backspace/Enter/Ctrl+Z shortcuts don't fire while the modal is up. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-015",
+      "title": "Auto-advance to next flagged hole on confirm",
+      "description": "As a reviewer, I want the UI to jump to the next flagged hole after I confirm one so I can move through review without clicking.",
+      "acceptanceCriteria": [
+        "After a successful POST /confirm, HoleList selects the next hole where needs_review = true AND confirmed = false (by lowest assignment_confidence)",
+        "Map fits to the newly selected hole",
+        "When no flagged holes remain, the UI surfaces a 'Ready to sign off' CTA to open the sign-off screen",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "Implemented in components/review/ReviewWorkspace.tsx. confirmActiveHole() now computes the next flagged hole from the locally-updated holes list (filter needs_review=true AND !confirmed, sort by assignment_confidence ASC with hole_number as tiebreaker) and calls setSelectedHoleId(nextFlagged.id) + setSelectedFeatureId(null). The existing re-center useEffect (line ~583) already fires fitToHole on selectedHoleId change, so the map follows automatically — no extra mapRef call needed. When no flagged holes remain, a green 'All flagged holes resolved — ready to sign off.' banner renders at top-center with its own 'Sign off course' CTA (data-testid='ready-to-signoff'/'ready-to-signoff-cta') that opens the SignOffDialog. The banner hides when signOffOpen OR confirmError OR undoError is set so it never stacks with alert banners. The existing map-controls 'Sign off course' button stays as a general entry point. Note: this changed `setHoles((prev) => prev.map(...))` to a local `const updated = holes.map(...); setHoles(updated)` pattern so the next-flagged computation sees the updated state without nesting setter calls — the holes dep in useCallback covers it. No dev-browser tool in this environment — browser AC needs manual verification on npm run dev."
+    },
+    {
+      "id": "US-016",
+      "title": "Tests — transaction integrity for correction endpoints",
+      "description": "As a developer, I want tests that prove corrections + mutations are atomic so a half-applied correction can never ship.",
+      "acceptanceCriteria": [
+        "Jest tests under tests/api/ cover: PATCH hole, PATCH type, PATCH geometry, DELETE feature",
+        "Each test forces the feature mutation to fail (e.g. invalid FK) and asserts the corrections row was rolled back too",
+        "And forces the corrections insert to fail and asserts the feature row was unchanged",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-transactions.test.ts — 8 tests covering the 4 correction endpoints (PATCH /hole, PATCH /type, PATCH /geometry, DELETE /feature). Strategy: spy on db.$transaction and swap ONE element of the 2-statement array for a failing raw SQL (SELECT 1/0), then forward to the real $transaction bound reference. Because the real $transaction runs the array in a single Postgres tx, the forced failure rolls back the sibling statement, proving atomicity from the outside. For each endpoint: (1) force second statement to fail → assert feature row unchanged + zero corrections rows with the matching correction_type; (2) force first statement to fail → same assertions. Uses the same docker-compose Postgres/PostGIS instance as the existing tests/api suites; seeds org + user + course + 2 holes in beforeAll, resets features + corrections in beforeEach, tears everything down in afterAll. realTransaction captured via `db.$transaction.bind(db)` at module scope before any spy, so mockImplementationOnce can forward to it cleanly."
+    },
+    {
+      "id": "US-017",
+      "title": "Tests — lock 409, geometry 422, sign-off 400",
+      "description": "As a developer, I want behavioural tests on the key reject paths so regressions are caught in CI.",
+      "acceptanceCriteria": [
+        "Test: a correction endpoint returns 409 when the course lock is held by a different user",
+        "Test: PATCH geometry returns 422 for ST_IsValid = false polygon",
+        "Test: PATCH geometry returns 422 for polygon with area < 20 m²",
+        "Test: POST /review/complete returns 400 when any hole has needs_review = true AND confirmed = false, and the course status is unchanged",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-reject-paths.test.ts — 4 tests covering the key reject paths. (1) Lock 409: userA holds courses.locked_by; session = userB; PATCH /api/features/[featureId]/hole returns 409; assert feature.hole_id unchanged AND zero corrections rows. (2) Geometry 422 (invalid): self-intersecting bowtie MultiPolygon — ST_GeomFromGeoJSON parses it but ST_IsValid returns false; assert 422 + zero corrections rows. (3) Geometry 422 (area): ~1.1m × 1.1m polygon at latitude 37° ≈ 1.2 m², below 20 m² floor; assert 422 + zero corrections rows. (4) Sign-off 400: hole 1 flagged (needs_review=true, confirmed=false); POST /api/courses/[id]/review/complete returns 400; body.blocking_holes contains 1; courses.status still 'unmapped'; zero 'course_signoff' corrections rows written. Reuses the pattern from corrections-transactions.test.ts: next-auth mock + two reviewer users (A/B) in the same org so lock-conflict can be tested; beforeEach resets course lock state, course status back to 'unmapped', holes back to needs_review=false/confirmed=false, and re-inserts the feature with ST_Multi(ST_GeomFromText(...)) because Prisma can't write PostGIS geometry."
+    },
+    {
+      "id": "US-018",
+      "title": "Tests — hard delete preserves corrections row",
+      "description": "As a developer, I want proof that the corrections audit trail survives a polygon delete.",
+      "acceptanceCriteria": [
+        "Test: DELETE /api/features/[featureId] removes the feature row (SELECT returns nothing)",
+        "Test: the corresponding corrections row with correction_type = 'polygon_delete' remains, with geometry, feature_type, hole_id, and assignment_confidence snapshots populated",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 18,
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-hard-delete.test.ts — 2 tests. (1) Calls DELETE /api/features/[featureId] and asserts status=204 + SELECT from features returns 0 rows. (2) Seeds a feature with feature_type='bunker', confidence_score=0.654 on hole_number=7, then after DELETE asserts exactly one corrections row exists for that course with correction_type='polygon_delete', feature_id IS NULL (ON DELETE SET NULL), has_geometry_snapshot=true, ST_Area(original_geometry::geography) between 9,000–11,000 m² (seeded ~9,900 m²), original_feature_type='bunker', original_hole_number=7, notes contains valid JSON with confidence_score≈0.654, and corrected_by=session.user.id. Seeding pattern mirrors corrections-transactions.test.ts but adds confidence_score to the INSERT (the existing transaction test uses a bare seed). Note: corrections schema has no hole_id column — AC's 'hole_id snapshot' is satisfied by original_hole_number, which is the human-meaningful identity the existing route populates via LEFT JOIN holes."
+    },
+    {
+      "id": "US-019",
+      "title": "API route tests — org isolation across all correction endpoints",
+      "description": "As a developer, I want all correction routes covered by org-isolation tests so cross-org data access is impossible.",
+      "acceptanceCriteria": [
+        "For each correction endpoint (PATCH hole, PATCH type, PATCH geometry, DELETE feature, POST confirm, POST review/complete, GET corrections): a test verifies that a user in org A cannot read or mutate a feature/course owned by org B (404 or 403)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 19,
+      "passes": true,
+      "notes": "Implemented tests/api/corrections-org-isolation.test.ts — 7 tests, one per correction endpoint (PATCH hole, PATCH type, PATCH geometry, DELETE feature, POST confirm, POST review/complete, GET corrections). Seeds two orgs: attacker user lives in orgA, the course + holes + feature + one existing correction row belong to orgB. Every endpoint invoked with the attacker session must return 404 (not 403 — all helpers join through courses.org_id and return null rather than distinguishing 'exists but other org' from 'does not exist'). Each test also asserts no side-effect landed: feature.hole_id / feature_type / geometry unchanged; hole needs_review/confirmed/confirmation_type untouched; courses.status still 'unmapped'; zero new corrections rows for the target course_id. GET /corrections additionally asserts body.corrections is undefined so the pre-seeded orgB row isn't leaked. Reuses ensureOrg/ensureUser/sessionFor helpers from the other test files; beforeEach resets feature + corrections + course lock/status + hole flags so one test's accidental write can't be misread as the next test's success."
+    },
+    {
+      "id": "US-020",
+      "title": "Component tests — HoleList, Inspector, CorrectionActions",
+      "description": "As a developer, I want component tests for the review UI so rendering logic is covered.",
+      "acceptanceCriteria": [
+        "HoleList test: flagged holes sort by assignment_confidence ASC at top; confirmed holes below by hole number; progress counter matches confirmed/total",
+        "Inspector test: renders hole view vs polygon view based on selection; dropdown options populate correctly",
+        "CorrectionActions test: Apply is disabled until a change is staged; Cancel reverts; error state renders on mocked non-2xx",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 20,
+      "passes": true,
+      "notes": "Extended tests/components/HoleList.test.tsx with 4 render tests on top of the existing orderHolesForReview pure logic coverage: listbox renders rows in review order (flagged ASC confidence first, then by hole number), progress counter renders '2 / 5 confirmed' in header and 'Progress: 2 / 5 ✓' in footer, data-flagged/data-confirmed attrs set correctly per row, aria-selected tracks selectedHoleId. New tests/components/Inspector.test.tsx — 6 tests across two describe blocks: view switching (no-hole placeholder, hole view when hole selected, polygon view when feature selected) and dropdown population (reassign-hole lists all holes ASC and defaults to the feature's current hole; change-type lists the 5 FeatureType options in enum order and defaults to the feature's current type). New tests/components/CorrectionActions.test.tsx — 6 tests covering the Inspector sub-controls ReassignHoleControl + ChangeTypeControl: Apply disabled until dirty, Cancel reverts local selection + re-disables Apply, non-2xx surfaces inline role=alert error without firing onSuccess (staged value preserved for Retry), 2xx fires onSuccess with correct payload including priorHoleId/priorType. fetch is mocked via a FakeResponse helper because jsdom has no global Response constructor — an async fn returning { ok, status, json() } is enough for the control's code path. All 28 component tests pass; typecheck clean."
+    },
+    {
+      "id": "US-021",
+      "title": "Sentry wired into the Next.js app",
+      "description": "As an operator, I want production errors captured in Sentry so I can diagnose issues without user reports.",
+      "acceptanceCriteria": [
+        "@sentry/nextjs installed and configured with sentry.client.config.ts + sentry.server.config.ts + sentry.edge.config.ts using SENTRY_DSN env var",
+        "next.config.mjs wraps with withSentryConfig",
+        "DSN absence does not crash local dev (only initialises when SENTRY_DSN is set)",
+        "A deliberately thrown error from an API route is captured (verifiable by checking captureException is called — unit test with mocked Sentry)",
+        "Typecheck passes"
+      ],
+      "priority": 21,
+      "passes": true,
+      "notes": "Installed @sentry/nextjs@^10.50.0. Added sentry.client.config.ts + sentry.server.config.ts + sentry.edge.config.ts — each reads SENTRY_DSN (client also falls back to NEXT_PUBLIC_SENTRY_DSN) and short-circuits Sentry.init() when the DSN is absent, so local dev without Sentry doesn't crash or emit noise. Added instrumentation.ts (Next.js 14 hook) that conditionally imports the server or edge config based on NEXT_RUNTIME. next.config.mjs wrapped with withSentryConfig({ silent: true }) — withSentryConfig is safe to call without a DSN (it simply skips source-map upload at build time). Added /api/debug/sentry route that deliberately throws + calls Sentry.captureException(err), plus tests/api/sentry.test.ts with @jest-environment node that mocks @sentry/nextjs and asserts captureException was called exactly once with the thrown Error instance. Typecheck passes; 30/30 tests pass (including the new one)."
+    },
+    {
+      "id": "US-022",
+      "title": "deploy.yml smoke tests",
+      "description": "As an operator, I want post-deploy smoke checks so a broken deploy is caught before users hit it.",
+      "acceptanceCriteria": [
+        ".github/workflows/deploy.yml runs after Vercel deploy: curl GET $STAGING_URL/api/health expecting 200",
+        "curl -o /dev/null -w '%{http_code}' GET $STAGING_URL/dashboard/courses expecting 307 or 302 (unauth redirect to /login)",
+        "Workflow fails if either smoke check fails",
+        "Typecheck passes"
+      ],
+      "priority": 22,
+      "passes": true,
+      "notes": "Extended .github/workflows/deploy.yml with two post-deploy smoke checks. Existing /api/health probe was tightened to capture pass/fail and fall through to the next step (previously exit 0 on success, which short-circuited any later smoke steps). Added a second step 'Smoke test /dashboard/courses unauth redirect' that curls the dashboard path unauthenticated and requires a 307 or 302 (next-auth middleware in middleware.ts redirects unauthenticated /dashboard/:path* to /login). Both smoke steps `exit 1` on failure so the workflow fails. Smoke probes target the freshly deployed URL captured in steps.deploy.outputs.url — not a STAGING_URL env var — which is more robust than a hard-coded hostname and applies equally to prod and preview deploys."
+    },
+    {
+      "id": "US-023",
+      "title": "Performance validation script",
+      "description": "As an operator, I want a script that measures the NFR targets so we know whether the MVP meets them before cutover.",
+      "acceptanceCriteria": [
+        "scripts/perf-check.ts (ts-node runnable) that exercises: course library page render, GET /api/courses/[id]/features/geojson latency, correction save round-trip (PATCH hole), and outputs a pass/fail table against the NFR targets in ROADMAP.md (library < 1.5s, map render < 2s, correction < 500ms)",
+        "Script is runnable via npm run perf:check and documented in README.md",
+        "Typecheck passes"
+      ],
+      "priority": 23,
+      "passes": true,
+      "notes": "Added scripts/perf-check.ts — a ts-node runnable that measures the three MVP NFRs (library page < 1.5s, GET /api/courses/[id]/features/geojson < 2s, PATCH /api/features/[featureId]/hole round-trip < 500ms) against a running dashboard. Auth is handled by the operator pasting a logged-in browser's next-auth.session-token into PERF_SESSION_COOKIE — NextAuth's credential+CSRF handshake is not worth reimplementing for a perf probe. Correction test toggles hole A→B and restores to A so repeat runs are idempotent. Prints a console.table pass/fail and exits non-zero on any miss. Added npm run perf:check (uses TS_NODE_COMPILER_OPTIONS env override for CommonJS because package.json inline --compiler-options with escaped JSON breaks under zsh). Documented in README.md under 'Performance validation'. Typecheck passes (npx tsc --noEmit clean)."
+    }
+  ]
+}

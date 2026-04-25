@@ -35,12 +35,10 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     return NextResponse.json({ error: `Job already ${job.status}` }, { status: 409 })
   }
 
-  const res = await cancelPipelineJob(job.id)
-  if (!res.ok) {
-    return NextResponse.json({ error: 'Failed to cancel', detail: res.error }, { status: 502 })
-  }
+  // The pipeline has no cancel endpoint; we only mark the local row. The
+  // pipeline will continue to completion and post whatever it produces.
+  await cancelPipelineJob(job.pipeline_job_id)
 
-  // Best-effort local mark — pipeline is source of truth and will also update.
   await db.$executeRaw`
     UPDATE pipeline_jobs
     SET status = 'cancelled'::"job_status_enum", completed_at = NOW()
