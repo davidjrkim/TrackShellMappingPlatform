@@ -61,7 +61,7 @@ describe('DELETE /api/features/[featureId] — corrections row survives (US-018)
     courseId = c.id
 
     const holes = await db.$queryRaw<{ id: string }[]>`
-      INSERT INTO holes (id, course_id, hole_number, assignment_confidence, needs_review, confirmed)
+      INSERT INTO holes (id, course_id, hole_number, confidence, needs_review, confirmed)
       VALUES (gen_random_uuid(), ${courseId}::uuid, 7, 0.82, false, false)
       RETURNING id
     `
@@ -85,10 +85,10 @@ describe('DELETE /api/features/[featureId] — corrections row survives (US-018)
     await db.$executeRaw`DELETE FROM corrections WHERE course_id = ${courseId}::uuid`
     await db.$executeRaw`DELETE FROM features WHERE course_id = ${courseId}::uuid`
 
-    // Seed a feature with a non-null confidence_score so the snapshot assertion
+    // Seed a feature with a non-null confidence so the snapshot assertion
     // has something meaningful to read.
     const rows = await db.$queryRaw<{ id: string }[]>`
-      INSERT INTO features (id, hole_id, course_id, feature_type, confidence_score, geometry)
+      INSERT INTO features (id, hole_id, course_id, feature_type, confidence, geometry)
       VALUES (
         gen_random_uuid(),
         ${hole1Id}::uuid,
@@ -181,8 +181,8 @@ describe('DELETE /api/features/[featureId] — corrections row survives (US-018)
     // because corrections has no dedicated column for it.
     expect(snap.notes).not.toBeNull()
     const parsed = JSON.parse(snap.notes!)
-    expect(parsed).toHaveProperty('confidence_score')
-    expect(Number(parsed.confidence_score)).toBeCloseTo(0.654, 3)
+    expect(parsed).toHaveProperty('confidence')
+    expect(Number(parsed.confidence)).toBeCloseTo(0.654, 3)
 
     // Author of the correction is the session user who issued DELETE.
     expect(snap.corrected_by).toBe(user.id)

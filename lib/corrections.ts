@@ -12,7 +12,7 @@ export type FeatureForMutation = {
   course_id: string
   hole_id: string | null
   feature_type: string
-  confidence_score: number | null
+  confidence: number | null
   reviewed: boolean
   org_id: string
   locked_by: string | null
@@ -30,7 +30,7 @@ export async function getFeatureForMutation(
       f.course_id,
       f.hole_id,
       f.feature_type::text            AS feature_type,
-      f.confidence_score::float       AS confidence_score,
+      f.confidence::float             AS confidence,
       f.reviewed,
       c.org_id,
       c.locked_by,

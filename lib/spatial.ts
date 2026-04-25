@@ -26,7 +26,7 @@ export async function getCourseFeaturesGeoJSON(courseId: string) {
       id: string
       feature_type: string
       hole_number: number | null
-      confidence_score: number | null
+      confidence: number | null
       reviewed: boolean
       geojson: string
     }[]
@@ -35,7 +35,7 @@ export async function getCourseFeaturesGeoJSON(courseId: string) {
       f.id,
       f.feature_type,
       h.hole_number,
-      f.confidence_score,
+      f.confidence,
       f.reviewed,
       ST_AsGeoJSON(f.geometry) AS geojson
     FROM features f
@@ -55,11 +55,15 @@ export async function getCourseHoleRoutingGeoJSON(courseId: string) {
       green_lat: number
     }[]
   >`
-    SELECT hole_number, tee_lng, tee_lat, green_lng, green_lat
+    SELECT hole_number,
+           ST_X(tee_centroid)   AS tee_lng,
+           ST_Y(tee_centroid)   AS tee_lat,
+           ST_X(green_centroid) AS green_lng,
+           ST_Y(green_centroid) AS green_lat
     FROM holes
     WHERE course_id = ${courseId}::uuid
-      AND tee_lat  IS NOT NULL AND tee_lng  IS NOT NULL
-      AND green_lat IS NOT NULL AND green_lng IS NOT NULL
+      AND tee_centroid   IS NOT NULL
+      AND green_centroid IS NOT NULL
     ORDER BY hole_number
   `
 }
@@ -292,7 +296,7 @@ export async function getCourseStats(courseId: string): Promise<CourseStats> {
       (SELECT COUNT(*)::int FROM holes
          WHERE course_id = ${courseId}::uuid
            AND needs_review AND NOT confirmed)                                 AS flagged_count,
-      (SELECT AVG(assignment_confidence)::float FROM holes
+      (SELECT AVG(confidence)::float FROM holes
          WHERE course_id = ${courseId}::uuid)                                  AS avg_confidence,
       (SELECT model_version FROM pipeline_jobs
          WHERE course_id = ${courseId}::uuid AND status = 'completed'

@@ -45,7 +45,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       id: h.id,
       hole_number: h.hole_number,
       par: h.par,
-      assignment_confidence: h.assignment_confidence,
+      confidence: h.confidence,
       needs_review: h.needs_review,
       confirmed: h.confirmed,
       polygon_count: h.polygon_count,

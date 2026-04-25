@@ -85,7 +85,7 @@ describe('correction endpoints — org isolation (US-019)', () => {
     courseId = c.id
 
     const holes = await db.$queryRaw<{ id: string }[]>`
-      INSERT INTO holes (id, course_id, hole_number, assignment_confidence, needs_review, confirmed)
+      INSERT INTO holes (id, course_id, hole_number, confidence, needs_review, confirmed)
       VALUES
         (gen_random_uuid(), ${courseId}::uuid, 1, 0.9, false, false),
         (gen_random_uuid(), ${courseId}::uuid, 2, 0.9, false, false)

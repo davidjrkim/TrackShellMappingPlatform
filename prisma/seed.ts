@@ -172,7 +172,7 @@ async function main() {
           courseId: seoulCC.id,
           holeNumber: n,
           par: n % 3 === 0 ? 3 : n % 5 === 0 ? 5 : 4,
-          assignmentConfidence: flagged ? parseFloat((0.45 + Math.random() * 0.2).toFixed(3)) : parseFloat((0.82 + Math.random() * 0.12).toFixed(3)),
+          confidence: flagged ? parseFloat((0.45 + Math.random() * 0.2).toFixed(3)) : parseFloat((0.82 + Math.random() * 0.12).toFixed(3)),
           needsReview: flagged,
         },
       })

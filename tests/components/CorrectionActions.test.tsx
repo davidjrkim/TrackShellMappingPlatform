@@ -10,16 +10,16 @@ import Inspector, { type InspectorFeature } from '@/components/review/Inspector'
 import type { HoleSummary } from '@/components/review/HoleList'
 
 const holes: HoleSummary[] = [
-  { id: 'hole-1', hole_number: 1, assignment_confidence: 0.9, needs_review: false, confirmed: false, polygon_count: 0 },
-  { id: 'hole-2', hole_number: 2, assignment_confidence: 0.5, needs_review: true,  confirmed: false, polygon_count: 0 },
-  { id: 'hole-3', hole_number: 3, assignment_confidence: 0.8, needs_review: false, confirmed: true,  polygon_count: 0 },
+  { id: 'hole-1', hole_number: 1, confidence: 0.9, needs_review: false, confirmed: false, polygon_count: 0 },
+  { id: 'hole-2', hole_number: 2, confidence: 0.5, needs_review: true,  confirmed: false, polygon_count: 0 },
+  { id: 'hole-3', hole_number: 3, confidence: 0.8, needs_review: false, confirmed: true,  polygon_count: 0 },
 ]
 
 const feature: InspectorFeature = {
   id: 'feat-1',
   feature_type: 'green',
   area_sqm: 500,
-  confidence_score: 0.77,
+  confidence: 0.77,
   hole_number: 2,
   reviewed: false,
 }

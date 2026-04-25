@@ -7,7 +7,7 @@ export type InspectorFeature = {
   id: string
   feature_type: string
   area_sqm: number | null
-  confidence_score: number | null
+  confidence: number | null
   hole_number: number | null
   reviewed: boolean
 }
@@ -134,7 +134,7 @@ function HoleView({
         <div className="flex items-baseline justify-between">
           <h2 className="text-base font-semibold text-gray-900">Hole {hole.hole_number}</h2>
           <span className="text-xs text-gray-500">
-            Confidence: <span className="font-medium text-gray-800">{formatConfidence(hole.assignment_confidence)}</span>
+            Confidence: <span className="font-medium text-gray-800">{formatConfidence(hole.confidence)}</span>
           </span>
         </div>
         {hole.confirmed ? (
@@ -176,7 +176,7 @@ function HoleView({
                       </span>
                     </span>
                     <span className="text-xs text-gray-500 tabular-nums">
-                      {formatArea(f.area_sqm)} · {formatConfidence(f.confidence_score)}
+                      {formatArea(f.area_sqm)} · {formatConfidence(f.confidence)}
                     </span>
                   </button>
                 </li>
@@ -289,7 +289,7 @@ function FeatureView({
         <Row label="Feature type" value={FEATURE_LABEL[feature.feature_type] ?? feature.feature_type} />
         <Row label="Assigned hole" value={feature.hole_number != null ? `Hole ${feature.hole_number}` : 'Unassigned'} />
         <Row label="Area" value={formatArea(feature.area_sqm)} />
-        <Row label="Confidence" value={formatConfidence(feature.confidence_score)} />
+        <Row label="Confidence" value={formatConfidence(feature.confidence)} />
         <Row label="Reviewed" value={feature.reviewed ? 'Yes' : 'No'} />
 
         <ReassignHoleControl

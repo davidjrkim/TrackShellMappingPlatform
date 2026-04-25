@@ -34,7 +34,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
         id: f.id,
         feature_type: f.feature_type,
         hole_number: f.hole_number,
-        confidence_score: f.confidence_score,
+        confidence: f.confidence,
         reviewed: f.reviewed,
       },
       geometry: JSON.parse(f.geojson),

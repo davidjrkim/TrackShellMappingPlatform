@@ -71,7 +71,7 @@ type HoleFeatureResponse = {
   hole: {
     id: string
     hole_number: number
-    assignment_confidence: number | null
+    confidence: number | null
     needs_review: boolean
     confirmed: boolean
   }
@@ -410,14 +410,14 @@ export default function ReviewWorkspace({
           : h,
       )
       setHoles(updated)
-      // Auto-advance to the next flagged hole (lowest assignment_confidence).
+      // Auto-advance to the next flagged hole (lowest confidence).
       // Falls back to hole_number when confidences tie. When none remain, the
       // "Ready to sign off" CTA surfaces via hasBlockingFlagged.
       const nextFlagged = updated
         .filter((h) => h.needs_review && !h.confirmed)
         .sort((a, b) => {
-          const ac = a.assignment_confidence ?? 1
-          const bc = b.assignment_confidence ?? 1
+          const ac = a.confidence ?? 1
+          const bc = b.confidence ?? 1
           if (ac !== bc) return ac - bc
           return a.hole_number - b.hole_number
         })[0]

@@ -136,11 +136,9 @@ model Hole {
   holeNumber           Int      @map("hole_number") @db.SmallInt
   par                  Int?     @db.SmallInt
   strokeIndex          Int?     @map("stroke_index") @db.SmallInt
-  teeLat               Decimal? @map("tee_lat") @db.Decimal(10, 7)
-  teeLng               Decimal? @map("tee_lng") @db.Decimal(10, 7)
-  greenLat             Decimal? @map("green_lat") @db.Decimal(10, 7)
-  greenLng             Decimal? @map("green_lng") @db.Decimal(10, 7)
-  assignmentConfidence Decimal? @map("assignment_confidence") @db.Decimal(4, 3)
+  // tee_centroid / green_centroid are GEOMETRY(Point,4326) — read via ST_X/ST_Y
+  // in raw SQL (lib/spatial.ts). Not exposed through Prisma Client.
+  confidence           Decimal? @db.Decimal(4, 3)
   needsReview          Boolean  @default(false) @map("needs_review")
   confirmed            Boolean  @default(false)
   confirmationType     HoleConfirmationType? @map("confirmation_type")
@@ -157,19 +155,22 @@ model Hole {
 model Feature {
   id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   holeId          String?     @map("hole_id") @db.Uuid
-  courseId        String      @map("course_id") @db.Uuid
+  // courseId is nullable in the column (pipeline doesn't supply it on INSERT;
+  // a BEFORE INSERT trigger derives it from holes.course_id). Treat as
+  // effectively required for application reads — every row has it post-insert.
+  courseId        String?     @map("course_id") @db.Uuid
   featureType     FeatureType @map("feature_type")
   // geometry is GEOMETRY(MultiPolygon,4326) — always MULTIPOLYGON per CLAUDE.md
   // Read/written via raw SQL in lib/spatial.ts — not accessible via Prisma Client
   areaSqm         Decimal?    @map("area_sqm") @db.Decimal(10, 2)
-  confidenceScore Decimal?    @map("confidence_score") @db.Decimal(4, 3)
+  confidence      Decimal?    @db.Decimal(4, 3)
   pixelClassId    Int?        @map("pixel_class_id") @db.SmallInt
   reviewed        Boolean     @default(false)
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt       DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
   hole        Hole?        @relation(fields: [holeId], references: [id], onDelete: Cascade)
-  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  course      Course?      @relation(fields: [courseId], references: [id], onDelete: Cascade)
   corrections Correction[]
 
   @@map("features")
@@ -179,6 +180,9 @@ model PipelineJob {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   courseId          String    @map("course_id") @db.Uuid
   jobType           String    @map("job_type") @db.VarChar(50)
+  pipelineJobId     String?   @map("pipeline_job_id") @db.VarChar(100)
+  force             Boolean   @default(false)
+  stage             String?   @db.VarChar(50)
   status            JobStatus @default(queued)
   triggeredBy       String?   @map("triggered_by") @db.Uuid
   modelVersion      String?   @map("model_version") @db.VarChar(50)

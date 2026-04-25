@@ -24,7 +24,7 @@ export default async function ReviewPage({ params }: { params: { id: string } })
   const holeSummaries = holes.map((h) => ({
     id: h.id,
     hole_number: h.hole_number,
-    assignment_confidence: h.assignment_confidence,
+    confidence: h.confidence,
     needs_review: h.needs_review,
     confirmed: h.confirmed,
     polygon_count: h.polygon_count,

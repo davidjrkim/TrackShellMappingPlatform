@@ -30,7 +30,7 @@ export async function DELETE(
     )
   }
 
-  // Snapshot geometry, feature_type, hole_number, and feature confidence_score
+  // Snapshot geometry, feature_type, hole_number, and feature confidence
   // into the corrections row BEFORE the hard DELETE, inside the same
   // transaction so the audit row only lands if the DELETE also succeeds.
   // corrections.feature_id has ON DELETE SET NULL, so the snapshot survives
@@ -51,7 +51,7 @@ export async function DELETE(
         f.feature_type,
         f.geometry,
         ${session.user.id}::uuid,
-        json_build_object('confidence_score', f.confidence_score)::text
+        json_build_object('confidence', f.confidence)::text
       FROM features f
       LEFT JOIN holes h ON h.id = f.hole_id
       WHERE f.id = ${feature.id}::uuid
