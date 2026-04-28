@@ -42,6 +42,11 @@ type Props = {
     priorType: string
   }) => void
   onRequestDeleteFeature: (feature: InspectorFeature) => void
+  onToggleDrawMode: () => void
+  drawModeActive?: boolean
+  canEditGeometry?: boolean
+  onConfirmHole: () => void
+  confirmInFlight?: boolean
   loading?: boolean
 }
 
@@ -82,6 +87,11 @@ export default function Inspector({
   onReassignSuccess,
   onTypeChangeSuccess,
   onRequestDeleteFeature,
+  onToggleDrawMode,
+  drawModeActive = false,
+  canEditGeometry = true,
+  onConfirmHole,
+  confirmInFlight = false,
   loading = false,
 }: Props) {
   const selectedFeature = selectedFeatureId
@@ -105,9 +115,20 @@ export default function Inspector({
           onReassignSuccess={onReassignSuccess}
           onTypeChangeSuccess={onTypeChangeSuccess}
           onRequestDelete={() => onRequestDeleteFeature(selectedFeature)}
+          onToggleDrawMode={onToggleDrawMode}
+          drawModeActive={drawModeActive}
+          canEditGeometry={canEditGeometry}
         />
       ) : (
-        <HoleView hole={hole} features={features} topology={topology} loading={loading} onSelectFeature={onSelectFeature} />
+        <HoleView
+          hole={hole}
+          features={features}
+          topology={topology}
+          loading={loading}
+          onSelectFeature={onSelectFeature}
+          onConfirmHole={onConfirmHole}
+          confirmInFlight={confirmInFlight}
+        />
       )}
     </aside>
   )
@@ -119,12 +140,16 @@ function HoleView({
   topology,
   loading,
   onSelectFeature,
+  onConfirmHole,
+  confirmInFlight,
 }: {
   hole: HoleSummary
   features: InspectorFeature[]
   topology: Props['topology']
   loading: boolean
   onSelectFeature: (id: string) => void
+  onConfirmHole: () => void
+  confirmInFlight: boolean
 }) {
   const flagged = hole.needs_review && !hole.confirmed
 
@@ -203,15 +228,27 @@ function HoleView({
       </div>
 
       <footer className="px-4 py-3 border-t border-gray-200 bg-gray-50">
-        <button
-          type="button"
-          disabled
-          title="Corrections land in Week 6"
-          className="w-full px-3 py-2 rounded-md bg-gray-300 text-gray-600 text-sm font-medium cursor-not-allowed"
-          data-testid="confirm-hole-disabled"
-        >
-          Confirm Hole (Week 6)
-        </button>
+        {hole.confirmed ? (
+          <button
+            type="button"
+            disabled
+            className="w-full px-3 py-2 rounded-md bg-green-100 text-green-800 text-sm font-medium cursor-default"
+            data-testid="confirm-hole-confirmed"
+          >
+            ✓ Hole Confirmed
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onConfirmHole}
+            disabled={confirmInFlight}
+            title="Confirm hole (Enter)"
+            className="w-full px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+            data-testid="confirm-hole"
+          >
+            {confirmInFlight ? 'Confirming…' : 'Confirm Hole'}
+          </button>
+        )}
       </footer>
     </div>
   )
@@ -263,6 +300,9 @@ function FeatureView({
   onReassignSuccess,
   onTypeChangeSuccess,
   onRequestDelete,
+  onToggleDrawMode,
+  drawModeActive,
+  canEditGeometry,
 }: {
   feature: InspectorFeature
   holes: HoleSummary[]
@@ -270,6 +310,9 @@ function FeatureView({
   onReassignSuccess: Props['onReassignSuccess']
   onTypeChangeSuccess: Props['onTypeChangeSuccess']
   onRequestDelete: () => void
+  onToggleDrawMode: () => void
+  drawModeActive: boolean
+  canEditGeometry: boolean
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -303,7 +346,21 @@ function FeatureView({
           onSuccess={onTypeChangeSuccess}
         />
 
-        <div className="pt-3 mt-2 border-t border-gray-100">
+        <div className="pt-3 mt-2 border-t border-gray-100 space-y-2">
+          <button
+            type="button"
+            onClick={onToggleDrawMode}
+            disabled={!canEditGeometry}
+            title={canEditGeometry ? 'Edit geometry (D)' : 'Geometry unavailable'}
+            className={
+              drawModeActive
+                ? 'w-full px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                : 'w-full px-3 py-1.5 text-xs rounded-md border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed'
+            }
+            data-testid="edit-geometry-toggle"
+          >
+            {drawModeActive ? 'Editing… (Esc to cancel)' : 'Edit geometry'}
+          </button>
           <button
             type="button"
             onClick={onRequestDelete}

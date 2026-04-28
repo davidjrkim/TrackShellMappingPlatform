@@ -39,6 +39,8 @@ function renderInspectorWithFeature(overrides: Partial<{
       onReassignSuccess={overrides.onReassignSuccess ?? (() => {})}
       onTypeChangeSuccess={overrides.onTypeChangeSuccess ?? (() => {})}
       onRequestDeleteFeature={() => {}}
+      onConfirmHole={() => {}}
+      onToggleDrawMode={() => {}}
     />,
   )
 }

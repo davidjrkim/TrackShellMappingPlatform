@@ -787,6 +787,11 @@ export default function ReviewWorkspace({
         onReassignSuccess={onReassignSuccess}
         onTypeChangeSuccess={onTypeChangeSuccess}
         onRequestDeleteFeature={onRequestDeleteFeature}
+        onToggleDrawMode={() => setDrawModeActive((v) => !v)}
+        drawModeActive={drawModeActive}
+        canEditGeometry={selectedFeatureGeometry != null}
+        onConfirmHole={() => void confirmActiveHole()}
+        confirmInFlight={confirmInFlight}
         loading={holeFeaturesLoading}
       />
 

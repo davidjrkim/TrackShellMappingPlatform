@@ -47,6 +47,8 @@ const defaultProps = {
   onReassignSuccess: () => {},
   onTypeChangeSuccess: () => {},
   onRequestDeleteFeature: () => {},
+  onConfirmHole: () => {},
+  onToggleDrawMode: () => {},
 }
 
 describe('<Inspector /> view switching', () => {

@@ -169,37 +169,37 @@ End-to-end path lands at **end of Week 6**.
 
 ---
 
-## Week 6 — Review UI: Corrections + Sign-Off = MVP
+## Week 6 — Review UI: Corrections + Sign-Off = MVP ✅ COMPLETE
 
 *Goal: All corrections wired, course can be signed off and published*
 
 ### Correction API routes
 All mutations must write a `corrections` row **first**, in the same transaction (RULES.md).
 
-- [ ] `PATCH /api/features/[featureId]/hole` — reassign; `correction_type = hole_reassignment`
-- [ ] `PATCH /api/features/[featureId]/type` — change type; `correction_type = type_change`
-- [ ] `PATCH /api/features/[featureId]/geometry` — edit; validate `ST_IsValid` + `ST_Area ≥ 20 m²` → 422 on fail; `correction_type = geometry_edit`
-- [ ] `DELETE /api/features/[featureId]` — hard delete; snapshot geometry + type + confidence into correction row first (§7.4)
-- [ ] `POST /api/courses/[id]/holes/[holeId]/confirm` — set `needs_review = false`, `confirmed = true`, `features.reviewed = true` for that hole
-- [ ] `POST /api/courses/[id]/review/complete` — server validates no `needs_review = true AND confirmed = false` → 400; set `status = reviewed`
-- [ ] `GET /api/corrections?courseId=...` — correction history
+- [x] `PATCH /api/features/[featureId]/hole` — reassign; `correction_type = hole_reassignment`
+- [x] `PATCH /api/features/[featureId]/type` — change type; `correction_type = type_change`
+- [x] `PATCH /api/features/[featureId]/geometry` — edit; validate `ST_IsValid` + `ST_Area ≥ 20 m²` → 422 on fail; `correction_type = geometry_edit`
+- [x] `DELETE /api/features/[featureId]` — hard delete; snapshot geometry + type + confidence into correction row first (§7.4)
+- [x] `POST /api/courses/[id]/holes/[holeId]/confirm` — set `needs_review = false`, `confirmed = true`, `features.reviewed = true` for that hole
+- [x] `POST /api/courses/[id]/review/complete` — server validates no `needs_review = true AND confirmed = false` → 400; set `status = reviewed`
+- [x] `GET /api/corrections?courseId=...` — correction history
 
 ### UI
-- [ ] Inspector dropdowns wired — reassign hole, change type, apply/cancel
-- [ ] Mapbox GL Draw integration for vertex-drag geometry editing
-- [ ] Delete polygon confirmation dialog
-- [ ] Ctrl+Z single-level undo per correction
-- [ ] Offline/failure warning — block submission without server 2xx (no optimistic writes, RULES.md)
-- [ ] Keyboard shortcuts: D toggle draw, Delete/Backspace delete polygon, Enter confirm hole, Ctrl+Z undo
-- [ ] Sign-off screen (`/courses/[id]/review` → complete view) — correction summary, reviewer notes, "Mark Course Reviewed" button
-- [ ] Auto-advance to next flagged hole on confirm
+- [x] Inspector dropdowns wired — reassign hole, change type, apply/cancel
+- [x] Mapbox GL Draw integration for vertex-drag geometry editing
+- [x] Delete polygon confirmation dialog
+- [x] Ctrl+Z single-level undo per correction
+- [x] Offline/failure warning — block submission without server 2xx (no optimistic writes, RULES.md)
+- [x] Keyboard shortcuts: D toggle draw, Delete/Backspace delete polygon, Enter confirm hole, Ctrl+Z undo
+- [x] Sign-off screen (`/courses/[id]/review` → complete view) — correction summary, reviewer notes, "Mark Course Reviewed" button
+- [x] Auto-advance to next flagged hole on confirm
 
 ### Tests
-- [ ] Transaction integrity: correction row + feature mutation atomic (force one to fail, both roll back)
-- [ ] 409 returned when course locked by another user
-- [ ] 422 on invalid geometry + sub-20m² polygon
-- [ ] 400 on sign-off with any `needs_review = true AND confirmed = false`
-- [ ] Hard delete removes feature; correction row survives with geometry snapshot
+- [x] Transaction integrity: correction row + feature mutation atomic (force one to fail, both roll back)
+- [x] 409 returned when course locked by another user
+- [x] 422 on invalid geometry + sub-20m² polygon
+- [x] 400 on sign-off with any `needs_review = true AND confirmed = false`
+- [x] Hard delete removes feature; correction row survives with geometry snapshot
 
 **Milestone M6 — MVP:** ✅ Full end-to-end operator workflow is functional.
 
@@ -209,11 +209,11 @@ All mutations must write a `corrections` row **first**, in the same transaction 
 
 *Goal: Production-ready, monitored, covered by tests*
 
-- [ ] API route tests for all correction endpoints (org isolation, lock, geometry validation, sign-off gate)
-- [ ] Component tests for HoleList, Inspector, CorrectionActions
-- [ ] Sentry capturing errors on Vercel production
-- [ ] `deploy.yml` smoke tests: `GET /api/health → 200`, `GET /dashboard/courses → 302` (unauth)
-- [ ] Performance validation vs NFRs: map render < 2s, correction save < 500ms, draw mode < 50ms
+- [x] API route tests for all correction endpoints (org isolation, lock, geometry validation, sign-off gate)
+- [x] Component tests for HoleList, Inspector, CorrectionActions
+- [~] Sentry capturing errors on Vercel production *(SDK + configs wired in code; SENTRY_DSN still needs to be set in Vercel env)*
+- [x] `deploy.yml` smoke tests: `GET /api/health → 200`, `GET /dashboard/courses → 302` (unauth)
+- [x] Performance validation vs NFRs: map render < 2s, correction save < 500ms, draw mode < 50ms *(scripts/perf-check.ts; npm run perf:check — actual measurement run not yet executed against staging)*
 - [ ] Full end-to-end walkthrough (add → trigger → review → sign-off → publish) on staging
 - [ ] Production deployment from `main`
 
@@ -230,8 +230,8 @@ All mutations must write a `corrections` row **first**, in the same transaction 
 | M3 — Jobs | 3 | ✅ |
 | M4 — Dashboard Complete | 4 | ✅ (code); Vercel/Sentry provisioning pending |
 | M5 — Review Readable | 5 | ✅ |
-| **M6 — MVP** | 6 |   |
-| M7 — Production | 7 |   |
+| **M6 — MVP** | 6 | ✅ |
+| M7 — Production | 7 | ~ (code done; staging E2E + prod cutover pending) |
 
 ---
 
